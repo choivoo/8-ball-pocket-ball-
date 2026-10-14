@@ -16,6 +16,17 @@ export type NetMsg =
   | { t: 'rematch'; seed: number }
   | { t: 'quit' };
 
+/** STUN 만으로는 이동통신망/대칭 NAT 에서 직접 연결이 안 되므로 TURN 중계 서버를 함께 지정한다 */
+const PEER_OPTIONS = {
+  config: {
+    iceCandidatePoolSize: 4,
+    iceServers: [
+      { urls: ['stun:stun.l.google.com:19302', 'stun:stun1.l.google.com:19302', 'stun:global.stun.twilio.com:3478'] },
+      { urls: ['turn:openrelay.metered.ca:80', 'turn:openrelay.metered.ca:443', 'turn:openrelay.metered.ca:443?transport=tcp'], username: 'openrelayproject', credential: 'openrelayproject' },
+    ],
+  },
+};
+
 const PREFIX = 'pool3d-8ball-';
 const ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
 
@@ -46,7 +57,7 @@ export class OnlineSession {
     return new Promise((resolve, reject) => {
       const tryCode = (attempt: number) => {
         const code = randomCode();
-        const peer = new Peer(PREFIX + code);
+        const peer = new Peer(PREFIX + code, PEER_OPTIONS);
         peer.on('open', () => {
           this.peer = peer; this.code = code;
           // 모바일에서 화면이 꺼지거나 백그라운드로 가면 브로커 연결이 끊긴다 → 즉시 재연결
@@ -81,11 +92,11 @@ export class OnlineSession {
     this.code = code.toUpperCase().trim();
     void this.keepScreenOn();
     return new Promise((resolve, reject) => {
-      const peer = new Peer();
+      const peer = new Peer(PEER_OPTIONS);
       this.peer = peer;
       let tries = 0, done = false;
       const fail = (e: Error) => { if (!done) { done = true; clearTimeout(timer); reject(e); } };
-      const timer = setTimeout(() => fail(new Error('연결 시간 초과')), 25000);
+      const timer = setTimeout(() => fail(new Error('연결 시간 초과 — 두 기기가 서로 직접 연결되지 못했습니다. 같은 Wi-Fi로 시도하거나 잠시 후 다시 시도하세요')), 30000);
       const attempt = () => {
         const c = peer.connect(PREFIX + this.code, { reliable: true });
         c.on('open', () => { if (done) return; done = true; clearTimeout(timer); this.bind(c); resolve(); });
