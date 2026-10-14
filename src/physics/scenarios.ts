@@ -144,3 +144,21 @@ export const SCENARIOS: Record<string, (cfg: PhysicsConfig) => ScenarioResult> =
   cushion: (c) => cushionReflection(c, 0),
   cushionEnglish: (c) => cushionReflection(c, 0.5),
 };
+
+/** 3D 테스트 랩에서 같은 장면을 눈으로 볼 수 있도록 하는 셋업 */
+export interface SceneSetup { name: string; balls: [number, number, number][]; shot: Shot }
+export const SCENE_SETUPS: Record<string, SceneSetup> = {
+  stop: { name: '스톱샷', balls: [[0, -0.5, 0], [1, 0.1, 0]], shot: shotOf(0, 2.0, 0, -0.18) },
+  draw: { name: '끌어치기', balls: [[0, -0.35, 0], [1, 0, 0]], shot: shotOf(0, 3.0, 0, -0.4) },
+  follow: { name: '밀어치기', balls: [[0, -0.6, 0], [1, 0, 0]], shot: shotOf(0, 3.0, 0, 0.5) },
+  cut30: (() => {
+    const cut = Math.PI / 6;
+    const gx = 0.8 - 2 * R * Math.cos(cut), gy = 2 * R * Math.sin(cut);
+    return { name: '30° 컷샷', balls: [[1, 0.8, 0], [0, gx - 1.5, gy]] as [number, number, number][], shot: shotOf(0, 1.5, 0, 0) };
+  })(),
+  cushion: { name: '쿠션 반사각 (45°)', balls: [[0, -0.3, -0.3]], shot: shotOf(Math.PI / 4, 2.0, 0, 0) },
+  cushionEnglish: { name: '쿠션 + 우측 사이드 스핀', balls: [[0, -0.3, -0.3]], shot: shotOf(Math.PI / 4, 2.0, 0.5, 0) },
+  swerve: { name: '마세(엘리베이션 + 사이드 스핀)', balls: [[0, -0.9, -0.2]], shot: shotOf(0.0, 1.6, 0.45, 0, 0.6) },
+  jump: { name: '점프샷', balls: [[0, -0.9, 0], [1, -0.35, 0]], shot: shotOf(0, 2.4, 0, -0.1, 0.85) },
+  break: { name: '브레이크', balls: [], shot: shotOf(0, 7.2, 0, 0.1) },
+};

@@ -433,6 +433,9 @@ export class World {
     return { miscue, ballSpeed: Math.hypot(vx, vy) };
   }
 
+  /** 정지 상태에서도 연출(포켓 낙하 등)용 시간을 흘려보낸다 */
+  idle(dt: number) { this.time += dt; }
+
   // ------------------------------------------------------------------ 유틸
   /** 정지할 때까지 시뮬레이션 (테스트/AI 용). 시뮬레이션 시간(초) 반환 */
   settle(maxTime = 40, dt = this.cfg.dt): number {
