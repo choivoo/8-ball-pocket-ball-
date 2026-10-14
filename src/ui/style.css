@@ -98,3 +98,6 @@ table.lab td, table.lab th { padding:6px 8px; border-bottom:1px solid var(--line
   .row > label { flex-basis:96px; }
   #stats { display:none; }
 }
+
+table.lab button { white-space:nowrap; }
+.lil-gui.autoPlace { top:130px !important; left:10px !important; right:auto !important; max-height:70vh; overflow:auto; }

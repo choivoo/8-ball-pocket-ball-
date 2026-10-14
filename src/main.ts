@@ -8,6 +8,7 @@ const q = new URLSearchParams(location.search).get('q');
 if (q === 'low' || q === 'medium' || q === 'high') settings.quality = q;
 const game = new Game(canvas, settings, document.getElementById('ui')!);
 (window as any).game = game;
+if (new URLSearchParams(location.search).has('norender')) game.view.skipRender = true;
 let last = -1;
 function frame(now: number) {
   const dt = last < 0 ? 0 : Math.max(0, (now - last) / 1000);

@@ -136,6 +136,31 @@ export function cushionReflection(cfg: PhysicsConfig, english = 0): ScenarioResu
   };
 }
 
+/** 점프샷: 가파른 큐 각도 + 강한 타격 → 공이 천에서 떠오름 */
+export function jumpShot(cfg: PhysicsConfig): ScenarioResult {
+  const w = emptyWorld(cfg);
+  place(w, 0, -0.9, 0);
+  w.strike(shotOf(0, 3.4, 0, 0, 0.9));
+  let zmax = 0;
+  for (let i = 0; i < 1500; i++) { w.step(cfg.dt); zmax = Math.max(zmax, w.balls[0].z); }
+  return { name: '점프샷', description: '엘리베이션 약 50° 로 강하게 → 공이 천에서 떠오름', pass: zmax > 0.03, detail: `최고 높이 ${(zmax * 1000).toFixed(0)} mm (공 지름 57 mm)` };
+}
+
+/** 스워브(마세): 엘리베이션 + 사이드 스핀 → 직선이 아니라 휘어 나감 */
+export function swerveShot(cfg: PhysicsConfig): ScenarioResult {
+  const lateral = (el: number) => {
+    const w = emptyWorld(cfg);
+    place(w, 0, -1.1, -0.3);
+    w.strike(shotOf(0, 1.8, 0.5, 0, el));
+    const v0 = Math.atan2(w.balls[0].vy, w.balls[0].vx);
+    for (let i = 0; i < 1200; i++) w.step(cfg.dt);
+    const b = w.balls[0];
+    return (Math.abs(Math.atan2(b.vy, b.vx) - v0) * 180) / Math.PI;
+  };
+  const flat = lateral(0), raised = lateral(0.6);
+  return { name: '스워브/마세', description: '사이드 스핀 + 큐 엘리베이션 → 경로가 휨', pass: raised > flat + 8, detail: `진행 방향 변화: 수평 큐 ${flat.toFixed(1)}° vs 엘리베이션 34° ${raised.toFixed(1)}°` };
+}
+
 export const SCENARIOS: Record<string, (cfg: PhysicsConfig) => ScenarioResult> = {
   stop: stopShot,
   draw: drawShot,
@@ -143,6 +168,8 @@ export const SCENARIOS: Record<string, (cfg: PhysicsConfig) => ScenarioResult> =
   cut30: (c) => cutShot30(c, 30),
   cushion: (c) => cushionReflection(c, 0),
   cushionEnglish: (c) => cushionReflection(c, 0.5),
+  jump: jumpShot,
+  swerve: swerveShot,
 };
 
 /** 3D 테스트 랩에서 같은 장면을 눈으로 볼 수 있도록 하는 셋업 */

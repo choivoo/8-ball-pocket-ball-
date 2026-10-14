@@ -746,6 +746,7 @@ export class Game {
   private toggleDebug() {
     if (this.gui) { this.gui.destroy(); this.gui = null; return; }
     const g = new GUI({ title: '물리 파라미터 (실시간)' });
+    g.domElement.style.cssText += ';left:10px;right:auto;top:130px;';
     const c = this.world.cfg;
     const fold = (name: string, items: [keyof typeof c, number, number, number?][]) => {
       const f = g.addFolder(name);

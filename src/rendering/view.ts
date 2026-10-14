@@ -169,8 +169,10 @@ export class GameView {
     return { x: r.left + ((v.x + 1) / 2) * r.width, y: r.top + ((1 - v.y) / 2) * r.height, visible: v.z < 1 };
   }
 
+  skipRender = false;
   render(dt: number) {
     this.rig.update(dt);
+    if (this.skipRender) return;
     (this.room.userData.lamps as THREE.Object3D).visible = this.rig.camera.position.y < 1.15;
     this.post.render(dt);
   }
