@@ -136,9 +136,10 @@ export class GameView {
     const s = Math.sqrt(Math.max(0, 1 - a * a - b * b));
     const cs = Math.cos(c.angle), sn = Math.sin(c.angle);
     const fx = cs, fy = sn, rx = sn, ry = -cs;
-    const px = R * (-s * fx + a * rx), py = R * (-s * fy + a * ry), pz = R * b;
     const ce = Math.cos(c.elevation), se = Math.sin(c.elevation);
     const d = [fx * ce, fy * ce, -se];
+    const ux = ry * d[2], uy = -rx * d[2], uz = rx * d[1] - ry * d[0]; // up' = right × d
+    const px = R * (-s * d[0] + a * rx + b * ux), py = R * (-s * d[1] + a * ry + b * uy), pz = R * (-s * d[2] + b * uz);
     const gap = 0.004 + c.pull;
     this.cue.place(c.x + px - d[0] * gap, c.y + py - d[1] * gap, R + c.z + pz - d[2] * gap, c.angle, c.elevation);
   }

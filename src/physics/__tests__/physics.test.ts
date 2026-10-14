@@ -81,6 +81,85 @@ describe('pockets', () => {
   });
 });
 
+describe('cue strike model', () => {
+  const strike = (a: number, b: number, el = 0, V = 3) => {
+    const w = emptyWorld(cfg()); place(w, 0, 0, 0);
+    const r = w.strike(shotOf(0, V, a, b, el));
+    return { w, r, ball: w.balls[0] };
+  };
+  it('squirt: right-hand english pushes the ball left (CCW)', () => {
+    const { ball } = strike(0.4, 0);
+    expect(Math.atan2(ball.vy, ball.vx)).toBeGreaterThan(0.01);
+    const l = strike(-0.4, 0).ball;
+    expect(Math.atan2(l.vy, l.vx)).toBeLessThan(-0.01);
+  });
+  it('miscue beyond ~0.5R tip offset only', () => {
+    expect(strike(0.45, 0).r.miscue).toBe(false);
+    expect(strike(0, -0.45).r.miscue).toBe(false);
+    expect(strike(0.7, 0).r.miscue).toBe(true);
+    expect(strike(0, 0.8).r.miscue).toBe(true);
+  });
+  it('steep cue lifts the ball (jump) while a flat cue does not', () => {
+    const run = (el: number) => {
+      const { w } = strike(0, 0, el, 2.4);
+      let zmax = 0;
+      for (let i = 0; i < 1500; i++) { w.step(0.001); zmax = Math.max(zmax, w.balls[0].z); }
+      return zmax;
+    };
+    expect(run(0)).toBe(0);
+    expect(run(0.85)).toBeGreaterThan(0.025);
+  });
+  it('elevation + side spin makes the path curve (swerve)', () => {
+    const lateral = (el: number) => {
+      const w = emptyWorld(cfg()); place(w, 0, -1.1, -0.3);
+      w.strike(shotOf(0, 1.8, 0.5, 0, el));
+      const v0 = Math.atan2(w.balls[0].vy, w.balls[0].vx);
+      for (let i = 0; i < 1200; i++) w.step(0.001);
+      const b = w.balls[0];
+      return Math.abs(Math.atan2(b.vy, b.vx) - v0);
+    };
+    expect(lateral(0.6)).toBeGreaterThan(lateral(0) + 0.15);
+  });
+  it('top/back spin: follow/draw change post-cushion speed and angle', () => {
+    const exit = (b: number) => {
+      const w = emptyWorld(cfg()); place(w, 0, 0, 0.3);
+      w.strike(shotOf(Math.PI / 4, 2.5, 0, b));
+      let o: [number, number] | null = null;
+      w.listeners.push((e) => { if (e.type === 'cushion' && !o) o = [w.balls[0].vx, w.balls[0].vy]; });
+      for (let i = 0; i < 3000 && !o; i++) w.step(0.001);
+      const [x, y] = o as unknown as [number, number];
+      return { ang: Math.atan2(Math.abs(x), Math.abs(y)), sp: Math.hypot(x, y) };
+    };
+    const top = exit(0.5), back = exit(-0.5);
+    expect(back.ang).toBeGreaterThan(top.ang);
+  });
+  it('jaw tips cause rattle on a rail-hugging ball', () => {
+    const w = emptyWorld(cfg());
+    place(w, 0, -0.5, TABLE.halfW - R * 0.97);
+    w.strike(shotOf(0, 1.8, 0, 0));
+    const ev: string[] = [];
+    w.listeners.push((e) => ev.push(e.type));
+    w.settle(10);
+    expect(ev).toContain('jaw');
+  });
+});
+
+describe('rack + break', () => {
+  it('a full break scatters balls and pots some, no ball escapes the table', async () => {
+    const { EightBall } = await import('../../game-rules/eightBall');
+    const w = new (await import('../world')).World(cfg());
+    EightBall.setupRack(w, 5);
+    w.strike(shotOf(0, 7.2, 0, 0.1));
+    for (let i = 0; i < 20000; i++) {
+      w.step(0.001);
+      for (const b of w.balls) if (!b.pocketed) { expect(Math.abs(b.x)).toBeLessThan(1.4); expect(Math.abs(b.y)).toBeLessThan(0.75); }
+      if (!w.isMoving()) break;
+    }
+    const moved = w.balls.filter((b) => !b.pocketed && b.id !== 0 && Math.hypot(b.x - 0.635, b.y) > 0.2).length;
+    expect(moved).toBeGreaterThan(5);
+  });
+});
+
 describe('determinism', () => {
   it('same shot twice gives identical results', () => {
     const run = () => {

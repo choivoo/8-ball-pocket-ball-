@@ -391,10 +391,13 @@ export class World {
     const cs = Math.cos(shot.angle), sn = Math.sin(shot.angle);
     const th = shot.elevation;
     const s = Math.sqrt(Math.max(0, 1 - a * a - bb * bb));
-    // 국소 좌표: f(전방), right, up
+    // 큐 축 방향 d (수평 f 를 elevation 만큼 아래로 기울임), 큐 축에 수직인 right / up' 프레임에서 타점을 정의
     const fx = cs, fy = sn, rx = sn, ry = -cs;
-    const px = R * (-s * fx + a * rx), py = R * (-s * fy + a * ry), pz = R * bb;
-    const dx = fx * Math.cos(th), dy = fy * Math.cos(th), dz = -Math.sin(th);
+    const ce = Math.cos(th), se = Math.sin(th);
+    const dx = fx * ce, dy = fy * ce, dz = -se;
+    // up' = right × d
+    const ux = ry * dz, uy = -rx * dz, uz = rx * dy - ry * dx;
+    const px = R * (-s * dx + a * rx + bb * ux), py = R * (-s * dy + a * ry + bb * uy), pz = R * (-s * dz + bb * uz);
     // 접촉 법선 (공 안쪽) n = -p/R
     const ndot = -(px * dx + py * dy + pz * dz) / R;
     const tanG = ndot <= 0 ? 99 : Math.sqrt(Math.max(0, 1 - ndot * ndot)) / ndot;

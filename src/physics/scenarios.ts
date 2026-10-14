@@ -158,7 +158,7 @@ export const SCENE_SETUPS: Record<string, SceneSetup> = {
   })(),
   cushion: { name: '쿠션 반사각 (45°)', balls: [[0, -0.3, -0.3]], shot: shotOf(Math.PI / 4, 2.0, 0, 0) },
   cushionEnglish: { name: '쿠션 + 우측 사이드 스핀', balls: [[0, -0.3, -0.3]], shot: shotOf(Math.PI / 4, 2.0, 0.5, 0) },
-  swerve: { name: '마세(엘리베이션 + 사이드 스핀)', balls: [[0, -0.9, -0.2]], shot: shotOf(0.0, 1.6, 0.45, 0, 0.6) },
-  jump: { name: '점프샷', balls: [[0, -0.9, 0], [1, -0.35, 0]], shot: shotOf(0, 2.4, 0, -0.1, 0.85) },
+  swerve: { name: '마세/스워브 (엘리베이션 + 사이드 스핀)', balls: [[0, -1.1, -0.3]], shot: shotOf(0, 1.8, 0.5, 0, 0.6) },
+  jump: { name: '점프샷 (엘리베이션 50°)', balls: [[0, -0.9, 0], [1, 0.3, 0]], shot: shotOf(0, 3.4, 0, 0, 0.9) },
   break: { name: '브레이크', balls: [], shot: shotOf(0, 7.2, 0, 0.1) },
 };
