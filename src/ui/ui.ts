@@ -285,7 +285,7 @@ export class UI {
       try {
         const code = await this.h.hostOnline(n.input.value || '플레이어');
         box.innerHTML = '';
-        box.append(el('div', 'sub', '이 코드를 친구에게 알려주세요. 접속을 기다리는 중...'), el('div', 'code', code));
+        box.append(el('div', 'sub', '이 코드를 친구에게 알려주세요. 접속을 기다리는 중... (이 화면을 켠 채로 두세요 — 화면이 꺼지거나 다른 앱으로 가면 방이 사라질 수 있어요)'), el('div', 'code', code));
       } catch (e: any) { err.textContent = '방 생성 실패: ' + (e?.message || e); hostBtn.disabled = false; }
     };
     joinBtn.onclick = async () => {
