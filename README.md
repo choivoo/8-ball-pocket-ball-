@@ -26,10 +26,10 @@ npm run build    # dist/ 정적 배포 (GitHub Pages/Vercel)
 | T / P / Esc / Enter | 탑뷰 / 리플레이 / 일시정지 / 큐볼 확정 |
 
 ## 구조
-`src/physics`(렌더 독립, vitest) · `rendering` · `input` · `audio`(Web Audio 합성, SampleBank 로 샘플 교체) · `game-rules`(RuleSet 인터페이스) · `ai` · `net`(PeerJS) · `ui` · `testbench`는 `physics/scenarios.ts`.
+`src/physics`(렌더 독립, vitest) · `rendering` · `input` · `audio`(Web Audio 합성, SampleBank 로 샘플 교체) · `game-rules`(RuleSet 인터페이스) · `ai` · `net`(MQTT 중계) · `ui` · `testbench`는 `physics/scenarios.ts`.
 자세한 모델은 `docs/PHYSICS.md`.
 
 ## 튜닝 포인트 / 알려진 한계
 - 쿠션 e, 천 마찰, squirt, 점프 바운스 계수는 실측 대비 눈으로 튜닝 필요(디버그 패널).
 - 피사계 심도 미구현. 사운드는 합성음이라 실제 샘플로 교체하면 더 좋아짐.
-- 온라인은 공개 PeerJS 브로커를 사용(방화벽/대칭 NAT 환경에서는 연결 실패 가능).
+- 온라인은 공개 MQTT(WebSocket) 브로커를 메시지 중계로 사용(NAT 무관, 8084/8884/8081 포트가 막힌 네트워크에서는 실패 가능).

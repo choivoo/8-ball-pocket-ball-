@@ -272,7 +272,7 @@ export class UI {
   }
 
   private showOnline() {
-    const c = el('div', 'card panel', '<h2>온라인 2인 (P2P)</h2><p class="sub">서버 없이 WebRTC 로 직접 연결됩니다. 한 명이 방을 만들고 코드를 알려주세요.</p>');
+    const c = el('div', 'card panel', '<h2>온라인 2인 (P2P)</h2><p class="sub">공개 중계 서버를 통해 연결됩니다(별도 서버 불필요). 한 명이 방을 만들고 코드를 알려주세요.</p>');
     const n = this.nameField('이름', this.settings.playerName);
     const err = el('div', 'err');
     const hostBtn = el('button', 'primary', '방 만들기');
