@@ -11,7 +11,7 @@ export interface Settings {
   control: 'stroke' | 'gauge';
   playerName: string;
   // 매치
-  rules: 'eight' | 'nine';
+  rules: 'eight' | 'nine' | 'algakki';
   raceTo: number; // 먼저 N 승
   shotClock: 0 | 30 | 45 | 60; // 초 (0 = 없음)
   // 외형 / 접근성 / 편의

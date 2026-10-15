@@ -190,7 +190,8 @@ export class UI {
       if (names[i] === '') continue;
       const g = state.groups[i];
       const c = el('div', 'pcard panel' + (state.turn === i && state.winner === null ? ' active' : ''));
-      const gl = nine ? (state.turn === i ? '샷 차례' : '대기') : g === 'solid' ? '솔리드' : g === 'stripe' ? '스트라이프' : state.breakDone ? '오픈 테이블' : '브레이크';
+      const alg = state.game === 'algakki';
+      const gl = alg ? `${state.ballOf![i] === 8 ? '⚫ 검은 공 (선공)' : '⚪ 흰 공'}${state.turn === i && state.winner === null ? ' · 샷 차례' : ''}` : nine ? (state.turn === i ? '샷 차례' : '대기') : g === 'solid' ? '솔리드' : g === 'stripe' ? '스트라이프' : state.breakDone ? '오픈 테이블' : '브레이크';
       const score = this.raceTo > 1 ? ` <span class="badge">${this.score[i]}/${this.raceTo}</span>` : '';
       c.append(el('div', 'nm', esc(names[i]) + score), el('div', 'gr', `${sub[i] ? sub[i] + ' · ' : ''}${gl}`));
       const balls = el('div', 'balls');
@@ -307,6 +308,7 @@ export class UI {
     item('로컬 2인 대전', '한 화면에서 번갈아 플레이', () => this.showLocal());
     item('AI 대전', '초급 / 중급 / 고급 — 실제 물리 시뮬로 샷 평가', () => this.showAI());
     item('온라인 2인', '방 코드를 공유해 친구와 대전 (유실 복구 지원)', () => this.showOnline());
+    item('알까기 ⚫⚪', '공 두 개로 벌이는 서바이벌 — 가위바위보로 선공(검은 공) 결정', () => this.showAlgakki());
     item('드릴 · 챌린지', '직선·컷·뱅크·포지션·점프·브레이크 등 10종, 별 3개 도전', () => this.h.openDrills());
     const row = el('div', 'row2');
     const mini = (t: string, fn: () => void) => { const b2 = el('button', '', t); b2.onclick = fn; row.append(b2); };
@@ -320,7 +322,7 @@ export class UI {
   }
 
   /** 규칙/레이스/샷클락 선택 블록 */
-  private matchBlock(c: HTMLElement, opts: { race?: boolean; clock?: boolean } = {}) {
+  private matchBlock(c: HTMLElement, opts: { race?: boolean; clock?: boolean; noAlgakki?: boolean } = {}) {
     const s2 = this.settings;
     const seg = <T extends string | number>(label: string, list: [string, T][], get: () => T, set: (v: T) => void) => {
       const r = el('div', 'row'); r.append(el('label', '', label));
@@ -328,15 +330,61 @@ export class UI {
       const draw = () => { sg.innerHTML = ''; for (const [t, v] of list) { const b = el('button', get() === v ? 'on' : '', t); b.onclick = () => { set(v); draw(); this.h.settingsChanged(); }; sg.append(b); } };
       draw(); r.append(sg); c.append(r);
     };
-    seg('종목', [['8볼', 'eight'], ['9볼', 'nine']], () => s2.rules, (v) => (s2.rules = v as Settings['rules']));
+    seg('종목', opts.noAlgakki ? [['8볼', 'eight'], ['9볼', 'nine']] : [['8볼', 'eight'], ['9볼', 'nine'], ['알까기', 'algakki']], () => (opts.noAlgakki && s2.rules === 'algakki' ? 'eight' : s2.rules), (v) => (s2.rules = v as Settings['rules']));
     if (opts.race) seg('매치', [['단판', 1], ['3판 2선승', 2], ['5판 3선승', 3], ['7판 4선승', 4]], () => s2.raceTo, (v) => (s2.raceTo = v as number));
     if (opts.clock) seg('샷 클락', [['없음', 0], ['30초', 30], ['45초', 45], ['60초', 60]], () => s2.shotClock, (v) => (s2.shotClock = v as Settings['shotClock']));
   }
 
+  private showAlgakki() {
+    const c = el('div', 'card panel', '<h2>알까기 ⚫⚪</h2>');
+    c.append(el('p', 'sub', '테이블에는 <b>검은 공(8번)</b>과 <b>흰 공</b> 단 두 개. <b>가위바위보</b>로 이긴 사람이 검은 공을 갖고 <b>선공</b>합니다. 각자 자기 공만 번갈아 쳐서 <b>상대 공을 먼저 포켓에 넣으면 승리</b>, 내 공이 빠지면 패배(동시에 빠져도 패배)! 끝까지 살아남은 공의 주인이 이깁니다.'));
+    const g = el('div', 'menu-grid');
+    const go = (fn: () => void) => () => { this.settings.rules = 'algakki'; fn(); };
+    const add = (t: string, sub: string, fn: () => void) => { const b = el('button', '', `${t}<small>${sub}</small>`); b.onclick = go(fn); g.append(b); };
+    add('로컬 2인', '한 화면에서 가위바위보 → 번갈아 샷', () => this.showLocal());
+    add('AI 대전', '가위바위보로 선공을 정하고 AI와 대결', () => this.showAI());
+    add('온라인 2인', '친구와 가위바위보(공정한 커밋-리빌) 후 대결', () => this.showOnline());
+    const back = el('button', 'ghost', '← 뒤로'); back.onclick = () => this.showMenu();
+    c.append(g, el('div', 'row'), back);
+    this.open(c);
+  }
+
+  /** 가위바위보 선택 오버레이 → 선택값('rock'|'paper'|'scissors') */
+  askRps(title: string, sub = ''): Promise<'rock' | 'paper' | 'scissors'> {
+    return new Promise((resolve) => {
+      const c = el('div', 'card panel', `<h2>${esc(title)}</h2><p class="sub">${sub}</p>`);
+      const row = el('div', 'rps');
+      for (const [id, ico, nm] of [['scissors', '✌️', '가위'], ['rock', '✊', '바위'], ['paper', '✋', '보']] as const) {
+        const b = el('button', '', `<span>${ico}</span><small>${nm}</small>`);
+        b.onclick = () => { this.closeOverlay(); resolve(id); };
+        row.append(b);
+      }
+      c.append(row);
+      this.open(c);
+    });
+  }
+
+  /** 대기 안내 (상대 선택/네트워크 대기) */
+  showWait(msg: string) {
+    const c = el('div', 'card panel', `<h2>${esc(msg)}</h2><p class="sub">잠시만 기다려 주세요...</p>`);
+    this.open(c, true);
+  }
+
+  /** 가위바위보 결과 공개. 자동으로 닫히고 resolve */
+  revealRps(left: { name: string; pick: string }, right: { name: string; pick: string }, text: string): Promise<void> {
+    const ico: Record<string, string> = { rock: '✊', paper: '✋', scissors: '✌️' };
+    return new Promise((resolve) => {
+      const c = el('div', 'card panel');
+      c.innerHTML = `<h2>가위바위보</h2><div class="rpsreveal"><div><span>${ico[left.pick]}</span><b>${esc(left.name)}</b></div><i>VS</i><div><span>${ico[right.pick]}</span><b>${esc(right.name)}</b></div></div><p class="sub" style="font-size:18px;color:var(--text)">${esc(text)}</p>`;
+      this.open(c, true);
+      setTimeout(() => { this.closeOverlay(); resolve(); }, 2000);
+    });
+  }
+
   private showPractice() {
     const c = el('div', 'card panel', '<h2>연습 (1인)</h2><p class="sub">혼자 자유롭게 연습합니다. ✋ 버튼으로 공을 직접 옮길 수 있어요.</p>');
-    this.matchBlock(c);
-    const go = el('button', 'primary', '시작'); go.onclick = () => this.h.startPractice();
+    this.matchBlock(c, { noAlgakki: true });
+    const go = el('button', 'primary', '시작'); go.onclick = () => { if (this.settings.rules === 'algakki') this.settings.rules = 'eight'; this.h.startPractice(); };
     const back = el('button', 'ghost', '← 뒤로'); back.onclick = () => this.showMenu();
     const bar = el('div', 'row'); bar.append(back, go);
     c.append(bar);
@@ -605,6 +653,7 @@ export class UI {
       ['Shift + 드래그', '미세 조준 (감도 1/10)'],
       ['← → / A D', '키보드 미세 조준'],
       ['우클릭 또는 Space 누른 채 마우스를 아래로 당겼다 위로 밀기', '스트로크 — 미는 속도가 곧 파워'],
+      ['알까기', '검은 공(8)·흰 공 두 개만. 가위바위보 승자가 검은 공+선공. 상대 공을 넣으면 승리, 내 공이 빠지면 패배'],
       ['오른쪽 파워 게이지', '아래로 당겼다 놓으면 발사 (모바일 기본)'],
       ['왼쪽 아래 타점 원', '클릭으로 타점 지정. 점선 원 밖은 미스큐 위험'],
       ['↑ ↓ / W S / Alt+휠 / +−', '큐 각도(엘리베이션). 크게 올리면 점프·마세'],

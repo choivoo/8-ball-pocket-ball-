@@ -10,7 +10,9 @@ export interface BallFull extends BallLite {
 
 export type NetMsg =
   | { t: 'hello'; name: string }
-  | { t: 'start'; seed: number; hostName: string; rules: 'eight' | 'nine'; raceTo: number; clock: number }
+  | { t: 'start'; seed: number; hostName: string; rules: 'eight' | 'nine' | 'algakki'; raceTo: number; clock: number }
+  | { t: 'rps-commit'; h: string }
+  | { t: 'rps-reveal'; c: string; salt: string }
   | { t: 'aim'; angle: number; elev: number; a: number; b: number; pull: number; bih: { x: number; y: number } | null }
   | { t: 'shot'; shot: Shot; balls: BallLite[]; rng: number; no: number }
   | { t: 'result'; rules: RuleState; balls: BallFull[]; fouls: string[]; messages: string[]; respot: number | null }

@@ -23,6 +23,8 @@ export interface Shot {
   a: number; // 좌우 타점 (공 반지름 단위, +는 오른쪽)
   b: number; // 상하 타점 (+는 위)
   elevation: number; // 큐 엘리베이션 (rad)
+  /** 타격할 공 번호 (기본 0 = 큐볼). 알까기에서는 검은 공(8)도 친다 */
+  ball?: number;
 }
 
 export interface BallSnapshot {

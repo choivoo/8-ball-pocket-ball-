@@ -7,6 +7,8 @@ import type { Ball, Shot } from './physics/types';
 import { SCENARIOS, SCENE_SETUPS } from './physics/scenarios';
 import { EightBall } from './game-rules/eightBall';
 import { NineBall } from './game-rules/nineBall';
+import { Algakki, BLACK, WHITE } from './game-rules/algakki';
+import { AlgakkiAI } from './ai/algakkiAi';
 import { Profile, levelFromXp } from './meta/profile';
 import { launchConfetti } from './ui/confetti';
 import { buildDrills, placeCfg, starsFor, freeSpot, type DrillDef, type DrillCfg } from './drills/drills';
@@ -26,8 +28,9 @@ type Mode = 'practice' | 'local' | 'ai' | 'online' | 'lab' | 'drill';
 type Phase = 'menu' | 'placing' | 'aiming' | 'shooting' | 'simulating' | 'thinking' | 'remote' | 'replay' | 'over' | 'lab';
 
 const EMOTES: Record<string, string> = { gg: 'GG', up: '👍', smile: '😀', sweat: '😅', fire: '🔥', think: '🤔' };
-interface Match { rules: 'eight' | 'nine'; raceTo: number; clock: number }
-interface ShotRecord { before: Ball[]; shot: Shot; rng: number; shooter: PlayerIdx }
+interface Match { rules: 'eight' | 'nine' | 'algakki'; raceTo: number; clock: number }
+type Rps = 'rock' | 'paper' | 'scissors';
+interface ShotRecord { before: Ball[]; shot: Shot; rng: number; shooter: PlayerIdx; ballId: number }
 
 export class Game {
   rules: RuleSet = EightBall;
@@ -95,6 +98,11 @@ export class Game {
   private contactPos: { x: number; y: number } | null = null;
   private cue0 = { x: 0, y: 0 };
   private tutStep = -1;
+  private blackSeat: PlayerIdx = 0;
+  private algAI: AlgakkiAI | null = null;
+  private rpsToken = 0;
+  private rpsInbox: { commit: string[]; reveal: { c: string; salt: string }[] } = { commit: [], reveal: [] };
+  private rpsWaiters: (() => void)[] = [];
   private drillNeedSetup = false;
   private timers: number[] = [];
   /** 지연 실행 (게임이 바뀌면 취소되어 이전 게임의 팝업이 새 게임 위에 뜨지 않는다) */
@@ -183,6 +191,10 @@ export class Game {
     this.remoteShot = false; this.pendingResult = null;
   }
 
+  /** 지금 샷을 치는 공 번호 (일반: 큐볼 0, 알까기: 차례인 플레이어의 공) */
+  private get activeId(): number { return this.state.ballOf ? this.state.ballOf[this.state.turn] : 0; }
+  private get cueBall(): Ball { return this.world.balls[this.activeId]; }
+
   private matchFromSettings(): Match {
     return { rules: this.settings.rules, raceTo: Math.max(1, this.settings.raceTo), clock: this.settings.shotClock };
   }
@@ -191,8 +203,10 @@ export class Game {
     this.clearTimers();
     this.match = match ? { ...match } : this.matchFromSettings();
     if (mode === 'practice' || mode === 'drill') this.match = { ...this.match, raceTo: 1, clock: 0 };
-    this.rules = this.match.rules === 'nine' ? NineBall : EightBall;
+    if (mode === 'practice' && this.match.rules === 'algakki') this.match = { ...this.match, rules: 'eight' };
+    this.rules = this.match.rules === 'nine' ? NineBall : this.match.rules === 'algakki' ? Algakki : EightBall;
     if (this.ai) this.ai = new PoolAI(this.world.cfg, this.aiLevel, this.rules);
+    this.algAI = mode === 'ai' && this.rules === Algakki ? new AlgakkiAI(this.world.cfg, this.aiLevel) : null;
     if (!keepScore) this.score = [0, 0];
     this.matchOver = false;
     this.run = 0; this.gameFouls = 0; this.maxDeficit = 0;
@@ -207,7 +221,9 @@ export class Game {
     this.ui.setPracticeTools(mode === 'practice');
     this.ui.showReplayBar(false);
     this.editing = false; this.controls.editing = false; this.ui.setEditActive(false);
+    this.firstTurn = this.rules === Algakki ? this.blackSeat : this.firstTurn;
     this.resetTable(seed);
+    if (this.rules === Algakki) this.state.ballOf = this.blackSeat === 0 ? [BLACK, WHITE] : [WHITE, BLACK];
     this.view.setTargetRing(null);
     if (mode === 'drill' && this.drill) { this.state = EightBall.init(); this.setupDrillAttempt(); }
     this.view.syncBalls(this.world.balls, this.world.time);
@@ -226,15 +242,20 @@ export class Game {
   }
   private startLocal(a: string, b: string) {
     this.ai = null; this.net = null;
-    this.beginGame('local', [a, b], ['', ''], (Date.now() & 0xffff) + 1);
+    const seed = (Date.now() & 0xffff) + 1;
+    if (this.settings.rules === 'algakki') { void this.algakkiStart('local', [a, b], ['', ''], seed, this.matchFromSettings()); return; }
+    this.beginGame('local', [a, b], ['', ''], seed);
   }
   private startAI(level: AiLevel, name: string) {
     this.aiLevel = level;
     this.ai = new PoolAI(this.world.cfg, level, this.rules);
     this.net = null; this.firstTurn = 0;
-    this.beginGame('ai', [name, `AI ${AI_LEVEL_NAMES[level]}`], ['', ''], (Date.now() & 0xffff) + 1);
+    const seed = (Date.now() & 0xffff) + 1;
+    if (this.settings.rules === 'algakki') { void this.algakkiStart('ai', [name, `AI ${AI_LEVEL_NAMES[level]}`], ['', ''], seed, this.matchFromSettings()); return; }
+    this.beginGame('ai', [name, `AI ${AI_LEVEL_NAMES[level]}`], ['', ''], seed);
   }
   private quitToMenu() {
+    this.rpsToken++; this.flushRps();
     this.clearTimers();
     this.closeNet();
     this.drill = null; this.ui.setDrillHud(null); this.ui.setClock(null); this.ui.inGame = false; this.ui.coach(null); this.tutStep = -1;
@@ -258,6 +279,7 @@ export class Game {
   private startFollowup(seed: number, announce: boolean) {
     const keep = !this.matchOver && this.match.raceTo > 1;
     this.firstTurn = this.mode === 'practice' ? 0 : (this.firstTurn === 0 ? 1 : 0);
+    if (this.match.rules === 'algakki') this.blackSeat = this.blackSeat === 0 ? 1 : 0; // 알까기: 판마다 검은 공(선공)을 교대
     if (announce && this.mode === 'online' && this.net) this.net.send({ t: 'rematch', seed });
     this.beginGame(this.mode, this.names, this.subs, seed, this.match, keep);
   }
@@ -287,8 +309,9 @@ export class Game {
         net.send({ t: 'start', seed, hostName: name, rules: mc.rules, raceTo: mc.raceTo, clock: mc.clock });
         this.mySeat = 0; this.firstTurn = 0;
         this.ai = null;
-        this.beginGame('online', [name, guestName], ['나', '상대'], seed, mc);
         this.bindNetGame(net);
+        if (mc.rules === 'algakki') void this.algakkiStart('online', [name, guestName], ['나', '상대'], seed, mc);
+        else this.beginGame('online', [name, guestName], ['나', '상대'], seed, mc);
       }
     };
     net.onClose = () => this.onNetClosed();
@@ -302,8 +325,10 @@ export class Game {
     net.onMessage = (m) => {
       if (m.t === 'start') {
         this.mySeat = 1; this.firstTurn = 0; this.ai = null;
-        this.beginGame('online', [m.hostName, name], ['상대', '나'], m.seed, { rules: m.rules, raceTo: m.raceTo, clock: m.clock });
         this.bindNetGame(net);
+        const mc: Match = { rules: m.rules, raceTo: m.raceTo, clock: m.clock };
+        if (mc.rules === 'algakki') void this.algakkiStart('online', [m.hostName, name], ['상대', '나'], m.seed, mc);
+        else this.beginGame('online', [m.hostName, name], ['상대', '나'], m.seed, mc);
       }
     };
     net.onClose = () => this.onNetClosed();
@@ -323,12 +348,12 @@ export class Game {
       w.x = b.x; w.y = b.y; w.pocketed = b.pocketed; w.pocketIndex = b.pocketIndex;
       w.vx = w.vy = w.vz = w.wx = w.wy = w.wz = 0; w.z = 0;
     }
-    this.world.balls[0].pocketed = false;
+    if (this.state.game !== 'algakki') this.world.balls[0].pocketed = false;
     this.world.rng.state = m.rng;
     this.remoteShot = true;
     this.pendingResult = this.pendingResult && this.pendingResult.rules.shots > m.no ? this.pendingResult : null;
     this.waitingRemote = false;
-    this.lastShot = { before: this.world.snapshot(), shot: m.shot, rng: m.rng, shooter: this.state.turn };
+    this.lastShot = { before: this.world.snapshot(), shot: m.shot, rng: m.rng, shooter: this.state.turn, ballId: this.activeId };
     this.shootAnim = { t: 0, dur: 0.45, from: 0.12 + Math.min(0.25, m.shot.speed * 0.03), shot: m.shot, auto: true };
     this.phase = 'shooting';
     this.controls.enabled = false;
@@ -391,6 +416,12 @@ export class Game {
       case 'emote':
         this.ui.showEmote(EMOTES[m.id] ?? '👍', false);
         break;
+      case 'rps-commit':
+        this.rpsInbox.commit.push(m.h); this.flushRps();
+        break;
+      case 'rps-reveal':
+        this.rpsInbox.reveal.push({ c: m.c, salt: m.salt }); this.flushRps();
+        break;
       case 'quit':
         this.onNetClosed();
         break;
@@ -428,7 +459,7 @@ export class Game {
     this.shootAnim = null; this.aiAnim = null; this.followThrough = 0;
     this.gaugeActive = false; this.gaugePower = 0; this.ui.setPower(0);
     const who = this.controller(this.state.turn);
-    const cue = this.world.balls[0];
+    const cue = this.cueBall;
     this.view.rig.mode = 'aim';
     this.cine = null; this.timeScale = 1;
     if (who === 'human') {
@@ -457,7 +488,7 @@ export class Game {
 
   private startAiming() {
     this.phase = 'aiming';
-    const cue = this.world.balls[0];
+    const cue = this.cueBall;
     this.controls.enabled = true; this.controls.placing = false;
     this.ui.showPlaceBar(false);
     this.ui.setAimControlsVisible(true);
@@ -581,17 +612,17 @@ export class Game {
     this.audio.init();
     this.settleTimer = 0;
     if (!this.remoteShot && this.phase !== 'replay') {
-      this.lastShot = { before: w.snapshot(), shot: { ...shot }, rng: w.rng.state, shooter: this.state.turn };
+      this.lastShot = { before: w.snapshot(), shot: { ...shot }, rng: w.rng.state, shooter: this.state.turn, ballId: this.activeId };
       if (this.net && this.mode === 'online') {
         this.net.send({ t: 'shot', shot, balls: this.lite(), rng: w.rng.state, no: this.state.shots });
       }
     }
     if (!this.remoteShot && this.phase !== 'replay') { this.recorder.attach(w); }
-    w.strike(shot);
+    w.strike({ ...shot, ball: this.activeId });
     this.settleHandled = false;
     this.sawAir = false;
     this.contactPos = null;
-    this.cue0 = { x: w.balls[0].x, y: w.balls[0].y };
+    this.cue0 = { x: this.cueBall.x, y: this.cueBall.y };
     this.strikeAt = w.time;
     this.view.rig.kick(Math.min(1, shot.speed / 6));
     this.followThrough = 1;
@@ -660,7 +691,7 @@ export class Game {
   /** 내 샷의 결과를 프로필 통계/업적/XP 에 반영 */
   private recordStats(rep: import('./game-rules/RuleSet').ShotReport, before: RuleState, res: import('./game-rules/RuleSet').EvalResult) {
     const shooter = before.turn;
-    if (this.mode === 'lab' || this.mode === 'drill' || this.controller(shooter) !== 'human') return;
+    if (this.mode === 'lab' || this.mode === 'drill' || this.state.game === 'algakki' || this.controller(shooter) !== 'human') return;
     const obj = rep.pocketed.filter((id) => id !== 0);
     const ls = this.lastShot;
     const shot = ls?.shot;
@@ -701,7 +732,7 @@ export class Game {
     if (this.mode === 'practice') { this.state.turn = 0; if (this.state.winner !== null) { this.practiceCleared(); } }
     // 큐볼 스크래치: 큐볼 복귀 (볼 인 핸드)
     const cue = w.balls[0];
-    if (cue.pocketed || Math.abs(cue.x) > 5) { cue.pocketed = false; cue.x = HEAD_X; cue.y = 0; cue.vx = cue.vy = 0; }
+    if (this.state.game !== 'algakki' && (cue.pocketed || Math.abs(cue.x) > 5)) { cue.pocketed = false; cue.x = HEAD_X; cue.y = 0; cue.vx = cue.vy = 0; }
     if (respot !== null) this.respotBall(respot);
     for (const m of msgs) this.ui.toast(m, 'good', 2400);
     for (const f of fouls) this.ui.toast(f, 'foul', 3200);
@@ -769,6 +800,7 @@ export class Game {
       this.profile.update((s) => {
         s.games++;
         if (this.mode === 'online') { s.onlineGames++; if (youWon) s.onlineWins++; }
+        if (this.state.game === 'algakki') { s.algakkiGames++; if (youWon) s.algakkiWins++; }
         if (youWon === true) { s.wins++; if (this.mode === 'ai') s.aiWins[this.aiLevel]++; if (this.gameFouls === 0) s.achievements['_clean'] = Date.now(); if (this.maxDeficit >= 3) s.achievements['_comeback'] = Date.now(); }
         else if (youWon === false) s.losses++;
       });
@@ -786,6 +818,7 @@ export class Game {
   // ================================================================== AI
   private async runAI() {
     if (this.aiBusy || !this.ai) return;
+    if (this.algAI) { await this.runAlgakkiAI(); return; }
     this.aiBusy = true;
     const turnAtStart = this.state.turn;
     const w = this.world;
@@ -806,6 +839,103 @@ export class Game {
       console.error(err);
       shot = { angle: Math.random() * 6.28, speed: 2, a: 0, b: 0, elevation: 0 };
     }
+    this.aiBusy = false;
+    if (this.phase !== 'thinking' || this.state.turn !== turnAtStart) return;
+    this.controls.aim.angle = Math.atan2(Math.sin(this.controls.aim.angle), Math.cos(this.controls.aim.angle));
+    this.aiAnim = { stage: 'aim', t: 0, shot, fromAngle: this.controls.aim.angle };
+    this.ui.setStatus(`${this.names[this.state.turn]} 조준 중...`);
+    this.controls.aim.a = shot.a; this.controls.aim.b = shot.b;
+  }
+
+  // ================================================================== 알까기 / 가위바위보
+  private flushRps() { const w = this.rpsWaiters; this.rpsWaiters = []; for (const f of w) f(); }
+  private async rpsWait<T>(get: () => T | undefined): Promise<T> {
+    for (;;) {
+      const v = get();
+      if (v !== undefined) return v;
+      await new Promise<void>((r) => this.rpsWaiters.push(r));
+    }
+  }
+  private static async hash(text: string): Promise<string> {
+    try {
+      if (crypto?.subtle) {
+        const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text));
+        return [...new Uint8Array(buf)].map((b) => b.toString(16).padStart(2, '0')).join('');
+      }
+    } catch { /* 폴백 */ }
+    let h = 2166136261; // FNV-1a (보안 컨텍스트가 아닐 때만)
+    for (let i = 0; i < text.length; i++) { h ^= text.charCodeAt(i); h = Math.imul(h, 16777619); }
+    return (h >>> 0).toString(16);
+  }
+  private static rpsJudge(a: Rps, b: Rps): 0 | 1 | 2 {
+    if (a === b) return 0;
+    return (a === 'rock' && b === 'scissors') || (a === 'scissors' && b === 'paper') || (a === 'paper' && b === 'rock') ? 1 : 2;
+  }
+
+  /** 가위바위보로 검은 공(선공)을 가질 좌석을 정한다. 비기면 다시. 취소되면 null */
+  private async runRps(mode: Mode, names: [string, string]): Promise<PlayerIdx | null> {
+    const token = this.rpsToken;
+    const cancelled = () => token !== this.rpsToken;
+    const picks: Rps[] = ['rock', 'paper', 'scissors'];
+    this.rpsInbox = { commit: [], reveal: [] };
+    for (;;) {
+      let c0: Rps, c1: Rps;
+      if (mode === 'local') {
+        c0 = await this.ui.askRps(`${names[0]} 차례`, '상대가 보지 않게 선택하세요');
+        if (cancelled()) return null;
+        c1 = await this.ui.askRps(`${names[1]} 차례`, '이제 상대가 선택하세요');
+      } else if (mode === 'ai') {
+        c0 = await this.ui.askRps('가위바위보', '이긴 사람이 <b>검은 공(선공)</b>을 가집니다');
+        c1 = picks[Math.floor(Math.random() * 3)];
+      } else {
+        const me = await this.ui.askRps('가위바위보', '이긴 사람이 <b>검은 공(선공)</b>을 가집니다');
+        if (cancelled() || !this.net) return null;
+        const salt = Math.random().toString(36).slice(2) + Date.now().toString(36);
+        const h = await Game.hash(`${me}:${salt}`);
+        this.net.send({ t: 'rps-commit', h });
+        this.ui.showWait('상대의 선택을 기다리는 중');
+        const peerHash = await this.rpsWait(() => this.rpsInbox.commit.shift());
+        if (cancelled() || !this.net) return null;
+        this.net.send({ t: 'rps-reveal', c: me, salt });
+        const rev = await this.rpsWait(() => this.rpsInbox.reveal.shift());
+        if (cancelled()) return null;
+        if (!picks.includes(rev.c as Rps) || (await Game.hash(`${rev.c}:${rev.salt}`)) !== peerHash) {
+          this.ui.showInfo('부정 행위 감지', '상대의 선택이 사전에 보낸 값과 달라 대결을 중단합니다.', '메인 메뉴', () => this.quitToMenu());
+          return null;
+        }
+        const peer = rev.c as Rps;
+        c0 = this.mySeat === 0 ? me : peer;
+        c1 = this.mySeat === 0 ? peer : me;
+      }
+      if (cancelled()) return null;
+      const r = Game.rpsJudge(c0, c1);
+      const win: PlayerIdx | null = r === 0 ? null : r === 1 ? 0 : 1;
+      await this.ui.revealRps({ name: names[0], pick: c0 }, { name: names[1], pick: c1 }, win === null ? '비겼어요! 다시 한 번' : `${names[win]} 승! ⚫ 검은 공 · 선공`);
+      if (cancelled()) return null;
+      if (win !== null) return win;
+    }
+  }
+
+  private async algakkiStart(mode: Mode, names: [string, string], subs: [string, string], seed: number, match: Match) {
+    const token = ++this.rpsToken;
+    this.ui.closeOverlay();
+    const winner = await this.runRps(mode, names);
+    if (winner === null || token !== this.rpsToken) return;
+    this.blackSeat = winner;
+    this.beginGame(mode, names, subs, seed, match);
+    this.ui.toast(`⚫ ${names[winner]}: 검은 공 · 선공`, 'good', 2600);
+  }
+
+  private async runAlgakkiAI() {
+    if (this.aiBusy || !this.algAI) return;
+    this.aiBusy = true;
+    const turnAtStart = this.state.turn;
+    await new Promise((r) => setTimeout(r, 500));
+    if (this.phase !== 'thinking') { this.aiBusy = false; return; }
+    const me = this.state.ballOf![turnAtStart], opp = this.state.ballOf![turnAtStart === 0 ? 1 : 0];
+    let shot: Shot;
+    try { shot = await this.algAI.chooseShot(this.world, me, opp); }
+    catch (err) { console.error(err); const m = this.world.balls[me], o = this.world.balls[opp]; shot = { angle: Math.atan2(o.y - m.y, o.x - m.x), speed: 3, a: 0, b: 0, elevation: 0 }; }
     this.aiBusy = false;
     if (this.phase !== 'thinking' || this.state.turn !== turnAtStart) return;
     this.controls.aim.angle = Math.atan2(Math.sin(this.controls.aim.angle), Math.cos(this.controls.aim.angle));
@@ -1145,7 +1275,7 @@ export class Game {
     }
     for (const b of this.world.balls) if (b.z > 0.01) { this.sawAir = true; break; }
     const w = this.world;
-    const cue = w.balls[0];
+    const cue = this.cueBall;
     const rig = this.view.rig;
 
     if (this.paused) { this.view.render(dt); return; }
@@ -1162,7 +1292,7 @@ export class Game {
         if (this.gaugeActive) pull = 0.04 + this.gaugePower * 0.34;
         this.visibleCuePull += (pull - this.visibleCuePull) * Math.min(1, dt * 30);
         this.drawCue(cue, a.angle, a.elevation, a.a, a.b, this.visibleCuePull);
-        const info = computeAim(w.balls, a.angle);
+        const info = computeAim(w.balls, a.angle, this.activeId);
         this.view.aim.update(cue, info, this.settings.aimLevel);
         if (this.controls.stroking) this.ui.setPower(Math.min(1, this.controls.pull / 0.4));
         else if (!this.gaugeActive) this.ui.setPower(0);
@@ -1275,10 +1405,10 @@ export class Game {
     // 후속 큐 연출
     if (this.followThrough > 0) {
       this.followThrough -= dt * 2.2;
-      const cue = w.balls[0];
+      const cue = w.balls[this.lastShot?.ballId ?? 0];
       const s = this.lastShot?.shot;
       if (s && this.followThrough > 0 && !cue.pocketed) {
-        this.drawCue({ ...cue, x: this.lastShot!.before[0].x, y: this.lastShot!.before[0].y, z: 0 }, s.angle, s.elevation, s.a, s.b, -0.04 * (1 - this.followThrough));
+        this.drawCue({ ...cue, x: this.lastShot!.before[this.lastShot!.ballId].x, y: this.lastShot!.before[this.lastShot!.ballId].y, z: 0 }, s.angle, s.elevation, s.a, s.b, -0.04 * (1 - this.followThrough));
       } else this.view.setCue({ visible: false, x: 0, y: 0, z: 0, angle: 0, elevation: 0, a: 0, b: 0, pull: 0 });
     } else this.view.setCue({ visible: false, x: 0, y: 0, z: 0, angle: 0, elevation: 0, a: 0, b: 0, pull: 0 });
 
@@ -1288,7 +1418,7 @@ export class Game {
         if (this.labTimer <= 0) {
           const shot = this.labShotPending; this.labShotPending = null;
           const prev = this.phase; void prev;
-          this.world.strike(shot);
+          this.world.strike({ ...shot, ball: this.activeId });
           this.settleHandled = false;
           this.followThrough = 0;
         }
@@ -1298,7 +1428,7 @@ export class Game {
     if (this.phase === 'replay' && this.replayStrikeIn > 0) {
       this.replayStrikeIn -= dt;
       if (this.replayStrikeIn <= 0 && this.lastShot) {
-        this.world.strike(this.lastShot.shot);
+        this.world.strike({ ...this.lastShot.shot, ball: this.lastShot.ballId });
         this.settleHandled = false;
         this.followThrough = 1;
       }

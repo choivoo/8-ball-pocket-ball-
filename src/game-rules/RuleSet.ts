@@ -4,7 +4,7 @@ export type Group = 'solid' | 'stripe';
 export type PlayerIdx = 0 | 1;
 
 export interface RuleState {
-  game: 'eightball' | 'nineball';
+  game: 'eightball' | 'nineball' | 'algakki';
   turn: PlayerIdx;
   groups: [Group | null, Group | null];
   breakDone: boolean;
@@ -15,6 +15,8 @@ export interface RuleState {
   endReason: string;
   pocketed: number[]; // 포켓된 오브젝트 볼 (큐볼 제외), 순서대로
   respot: number | null; // 다시 놓아야 하는 공 (8볼: 8번, 9볼: 9번)
+  /** 알까기: 각 플레이어(좌석)가 치는 공 번호. 검은 공 = 8, 흰 공 = 0 */
+  ballOf?: [number, number];
   shots: number;
   log: string[];
 }

@@ -16,12 +16,12 @@ export interface AimInfo {
 }
 
 /** 조준선 계산: 큐볼에서 angle 방향으로 쏴서 첫 접촉을 찾는다 (순수 기하) */
-export function computeAim(balls: { id: number; x: number; y: number; pocketed: boolean }[], angle: number): AimInfo {
-  const cue = balls[0];
+export function computeAim(balls: { id: number; x: number; y: number; pocketed: boolean }[], angle: number, cueId = 0): AimInfo {
+  const cue = balls[cueId];
   const dx = Math.cos(angle), dy = Math.sin(angle);
   let bestT = Infinity, bestId: number | null = null;
   for (const b of balls) {
-    if (b.id === 0 || b.pocketed) continue;
+    if (b.id === cueId || b.pocketed) continue;
     const rx = b.x - cue.x, ry = b.y - cue.y;
     const proj = rx * dx + ry * dy;
     if (proj <= 0) continue;

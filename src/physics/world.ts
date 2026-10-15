@@ -382,9 +382,9 @@ export class World {
    * 큐팁 마찰 원뿔(μ_tip)을 벗어나면 miscue. 엘리베이션은 d 의 수직 성분으로 반영되어
    * 천 바운스(점프)와 swerve(수평 축 스핀 + 슬라이딩 마찰)를 자연스럽게 만든다.
    */
-  strike(shot: { angle: number; speed: number; a: number; b: number; elevation: number }): { miscue: boolean; ballSpeed: number } {
+  strike(shot: { angle: number; speed: number; a: number; b: number; elevation: number; ball?: number }): { miscue: boolean; ballSpeed: number } {
     const cfg = this.cfg;
-    const ball = this.balls[0];
+    const ball = this.balls[shot.ball ?? 0];
     let a = shot.a, bb = shot.b;
     const rn = Math.hypot(a, bb);
     if (rn > 0.98) { a *= 0.98 / rn; bb *= 0.98 / rn; }

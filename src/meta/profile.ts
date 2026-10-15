@@ -10,6 +10,7 @@ export interface Stats {
   onlineGames: number; onlineWins: number;
   aiWins: [number, number, number];
   drillsDone: number;
+  algakkiGames: number; algakkiWins: number;
   playSeconds: number;
   xp: number;
   achievements: Record<string, number>; // id → 달성 시각
@@ -19,7 +20,7 @@ export interface Stats {
 export const emptyStats = (): Stats => ({
   games: 0, wins: 0, losses: 0, shots: 0, pots: 0, fouls: 0, scratches: 0, breaks: 0, breakPots: 0,
   bestRun: 0, longestPot: 0, bankPots: 0, jumps: 0, massé: 0, onlineGames: 0, onlineWins: 0,
-  aiWins: [0, 0, 0], drillsDone: 0, playSeconds: 0, xp: 0, achievements: {}, drillBest: {},
+  aiWins: [0, 0, 0], drillsDone: 0, algakkiGames: 0, algakkiWins: 0, playSeconds: 0, xp: 0, achievements: {}, drillBest: {},
 });
 
 export interface Achievement { id: string; name: string; desc: string; xp: number; test: (s: Stats) => boolean }
@@ -51,6 +52,8 @@ export const ACHIEVEMENTS: Achievement[] = [
   { id: 'drill_10', name: '성실한 연습', desc: '드릴 10회 완료', xp: 200, test: (s) => s.drillsDone >= 10 },
   { id: 'clean', name: '깨끗한 경기', desc: '파울 없이 한 게임 승리', xp: 150, test: (s) => s.achievements['_clean'] > 0 },
   { id: 'comeback', name: '역전승', desc: '상대 공이 3개 이상 더 많이 남은 상태에서 승리', xp: 250, test: (s) => s.achievements['_comeback'] > 0 },
+  { id: 'alg_1', name: '알까기 입문', desc: '알까기에서 승리', xp: 60, test: (s) => s.algakkiWins >= 1 },
+  { id: 'alg_10', name: '알까기 고수', desc: '알까기 10승', xp: 250, test: (s) => s.algakkiWins >= 10 },
   { id: 'hours_1', name: '단골', desc: '누적 플레이 1시간', xp: 120, test: (s) => s.playSeconds >= 3600 },
 ];
 
