@@ -10,6 +10,17 @@ export class CueView {
   inner = new THREE.Group();
   length = 1.45;
 
+  private mats: { shaft: THREE.MeshPhysicalMaterial; butt: THREE.MeshPhysicalMaterial; ring: THREE.MeshStandardMaterial } | null = null;
+
+  /** 스킨 적용 (색 + 텍스처) */
+  setSkin(shaft: string, butt: string, ring: number) {
+    if (!this.mats) return;
+    this.mats.shaft.map?.dispose(); this.mats.butt.map?.dispose();
+    this.mats.shaft.map = woodTexture(shaft, 1); this.mats.butt.map = woodTexture(butt, 1);
+    this.mats.ring.color.setHex(ring);
+    this.mats.shaft.needsUpdate = true; this.mats.butt.needsUpdate = true;
+  }
+
   constructor() {
     const len = this.length;
     const tex = woodTexture('#d6a566', 1);
@@ -30,6 +41,7 @@ export class CueView {
     const tipMat = new THREE.MeshStandardMaterial({ color: 0x2b66a8, roughness: 0.9 });
     const ferrule = new THREE.MeshStandardMaterial({ color: 0xf3efe4, roughness: 0.4 });
     const ring = new THREE.MeshStandardMaterial({ color: 0xd8d8de, metalness: 1, roughness: 0.25 });
+    this.mats = { shaft: shaftMat, butt: buttMat, ring };
     seg(0, 0.012, 0.0065, 0.0065, tipMat);
     seg(0.012, 0.038, 0.0065, 0.0068, ferrule);
     seg(0.038, len * 0.62, 0.0068, 0.0115, shaftMat);

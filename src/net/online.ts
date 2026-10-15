@@ -1,4 +1,5 @@
 import mqtt from 'mqtt';
+import { ReliableChannel, type WireMsg } from './reliable';
 import type { Shot } from '../physics/types';
 import type { RuleState } from '../game-rules/RuleSet';
 
@@ -9,10 +10,14 @@ export interface BallFull extends BallLite {
 
 export type NetMsg =
   | { t: 'hello'; name: string }
-  | { t: 'start'; seed: number; hostName: string }
+  | { t: 'start'; seed: number; hostName: string; rules: 'eight' | 'nine'; raceTo: number; clock: number }
   | { t: 'aim'; angle: number; elev: number; a: number; b: number; pull: number; bih: { x: number; y: number } | null }
-  | { t: 'shot'; shot: Shot; balls: BallLite[]; rng: number }
-  | { t: 'result'; rules: RuleState; balls: BallFull[]; fouls: string[]; messages: string[]; respot: boolean }
+  | { t: 'shot'; shot: Shot; balls: BallLite[]; rng: number; no: number }
+  | { t: 'result'; rules: RuleState; balls: BallFull[]; fouls: string[]; messages: string[]; respot: number | null }
+  | { t: 'need' }
+  | { t: 'state'; rules: RuleState; balls: BallFull[] }
+  | { t: 'turnover'; rules: RuleState; balls: BallFull[]; text: string }
+  | { t: 'emote'; id: string }
   | { t: 'rematch'; seed: number }
   | { t: 'quit' };
 
@@ -31,33 +36,36 @@ export function randomCode(brokerIdx: number): string {
   return s;
 }
 
-type Wire = { n: string; q: number; m: unknown };
+type Env = { n: string; w?: WireMsg; h?: '__join' | '__ack'; to?: string };
+export type NetStatus = 'connecting' | 'online' | 'reconnecting';
 
 export class OnlineSession {
   client: mqtt.MqttClient | null = null;
   isHost = false;
   code = '';
+  status: NetStatus = 'connecting';
   onMessage: (m: NetMsg) => void = () => {};
   onClose: () => void = () => {};
   onOpen: () => void = () => {};
+  onStatus: (s: NetStatus) => void = () => {};
   private nonce = Math.random().toString(36).slice(2, 10);
   private peerNonce = '';
-  private seq = 0;
+  private channel: ReliableChannel | null = null;
   private lastSeen = 0;
-  private lastRecvSeq = -1;
   private timer = 0;
   private opened = false;
   private wake: any = null;
+  private joinedResolve: (() => void) | null = null;
 
   private async keepScreenOn() {
     try { this.wake = await (navigator as any).wakeLock?.request('screen'); } catch { /* 미지원 */ }
   }
-
   private topic(role: 'h' | 'g') { return `pool3d/v1/${this.code}/${role}`; }
+  private setStatus(s: NetStatus) { if (s !== this.status) { this.status = s; this.onStatus(s); } }
 
   private connect(idx: number): Promise<mqtt.MqttClient> {
     return new Promise((resolve, reject) => {
-      const c = mqtt.connect(BROKERS[idx], { connectTimeout: 7000, reconnectPeriod: 2000, clean: true, keepalive: 20, clientId: 'pool3d_' + this.nonce });
+      const c = mqtt.connect(BROKERS[idx], { connectTimeout: 7000, reconnectPeriod: 1500, clean: true, keepalive: 15, clientId: 'pool3d_' + this.nonce });
       const t = setTimeout(() => { c.end(true); reject(new Error('timeout')); }, 8000);
       c.once('connect', () => { clearTimeout(t); resolve(c); });
       c.once('error', () => { /* 타임아웃에서 처리 */ });
@@ -73,61 +81,68 @@ export class OnlineSession {
     throw new Error('중계 서버에 연결할 수 없습니다 (' + (lastErr as Error)?.message + ')');
   }
 
+  private publish(env: Env) {
+    if (!this.client || !this.client.connected) return; // 끊긴 동안은 ReliableChannel 이 재전송한다
+    env.n = this.nonce;
+    this.client.publish(this.topic(this.isHost ? 'h' : 'g'), JSON.stringify(env), { qos: 0 });
+  }
+
+  private newChannel() {
+    this.channel = new ReliableChannel(
+      (w) => this.publish({ n: this.nonce, w }),
+      (m) => this.onMessage(m as NetMsg),
+    );
+  }
+
   private attach(c: mqtt.MqttClient, listenRole: 'h' | 'g') {
     this.client = c;
-    c.subscribe(this.topic(listenRole), { qos: 1 });
+    c.subscribe(this.topic(listenRole), { qos: 0 });
     c.on('message', (_t, payload) => {
-      let w: Wire;
-      try { w = JSON.parse(payload.toString()); } catch { return; }
-      if (!w || w.n === this.nonce) return;
-      this.handle(w);
+      let e: Env;
+      try { e = JSON.parse(payload.toString()); } catch { return; }
+      if (!e || e.n === this.nonce) return;
+      this.handle(e);
     });
+    c.on('connect', () => { this.setStatus(this.opened ? 'online' : 'connecting'); this.channel?.tick(); });
+    c.on('close', () => { if (this.opened) this.setStatus('reconnecting'); });
     this.lastSeen = Date.now();
-    // 상대 생존 확인: 4초마다 ping, 25초간 아무 신호 없으면 끊김으로 간주
     this.timer = window.setInterval(() => {
-      this.raw({ t: '__ping' });
-      if (this.opened && Date.now() - this.lastSeen > 25000) { this.opened = false; this.onClose(); }
-    }, 4000);
+      this.channel?.tick();
+      if (this.opened && Date.now() - this.lastSeen > 60000) { this.opened = false; this.onClose(); }
+    }, 1500);
     document.addEventListener('visibilitychange', this.onVisible);
   }
 
   private onVisible = () => {
-    if (document.visibilityState === 'visible') { this.client?.reconnect?.(); this.raw({ t: '__ping' }); }
+    if (document.visibilityState === 'visible') { this.client?.reconnect?.(); this.channel?.tick(); }
   };
 
-  private raw(m: unknown) {
-    if (!this.client || !this.client.connected) return;
-    const w: Wire = { n: this.nonce, q: this.seq++, m };
-    this.client.publish(this.topic(this.isHost ? 'h' : 'g'), JSON.stringify(w), { qos: 1 });
-  }
-
-  private handle(w: Wire) {
-    const m = w.m as any;
-    this.lastSeen = Date.now();
-    if (m?.t === '__ping') return;
-    if (this.isHost && m?.t === '__join') {
-      if (!this.peerNonce) this.peerNonce = w.n;
-      if (this.peerNonce !== w.n) return;
-      this.raw({ t: '__ack', to: w.n });
-      if (!this.opened) { this.opened = true; this.onOpen(); }
+  private handle(e: Env) {
+    if (this.isHost && e.h === '__join') {
+      const stale = Date.now() - this.lastSeen > 15000;
+      if (!this.peerNonce || e.n === this.peerNonce || stale || !this.opened) {
+        if (e.n !== this.peerNonce) { this.peerNonce = e.n; this.newChannel(); }
+        this.lastSeen = Date.now();
+        this.publish({ n: this.nonce, h: '__ack', to: e.n });
+        if (!this.opened) { this.opened = true; this.setStatus('online'); this.onOpen(); }
+      }
       return;
     }
-    if (!this.isHost && m?.t === '__ack') {
-      if (m.to !== this.nonce) return;
-      if (!this.opened) { this.opened = true; this.joinedResolve?.(); this.onOpen(); }
+    if (!this.isHost && e.h === '__ack') {
+      if (e.to !== this.nonce) return;
+      this.lastSeen = Date.now();
+      if (!this.opened) {
+        this.peerNonce = e.n; this.newChannel(); this.opened = true; this.setStatus('online');
+        this.joinedResolve?.(); this.onOpen();
+      }
       return;
     }
-    if (m?.t?.startsWith?.('__')) return;
-    if (this.peerNonce && this.isHost && w.n !== this.peerNonce) return;
-    // 중복 제거 (QoS1 재전송)
-    const key = w.q;
-    if (key <= this.lastRecvSeq && this.peerNonce === w.n) return;
-    if (this.isHost) this.peerNonce = w.n; else this.peerNonce = w.n;
-    this.lastRecvSeq = key;
-    this.onMessage(m as NetMsg);
+    if (e.w && e.n === this.peerNonce) {
+      this.lastSeen = Date.now();
+      if (this.status !== 'online') this.setStatus('online');
+      this.channel?.receive(e.w);
+    }
   }
-
-  private joinedResolve: (() => void) | null = null;
 
   async host(): Promise<string> {
     this.isHost = true;
@@ -152,15 +167,18 @@ export class OnlineSession {
       const t = window.setInterval(() => {
         if (this.opened) { clearInterval(t); return; }
         if (++tries > 10) { clearInterval(t); reject(new Error('방을 찾을 수 없습니다. 호스트가 대기 화면을 켜 둔 상태인지 확인하세요')); return; }
-        this.raw({ t: '__join' });
+        this.publish({ n: this.nonce, h: '__join' });
       }, 1500);
-      this.raw({ t: '__join' });
+      this.publish({ n: this.nonce, h: '__join' });
     });
   }
 
+  /** 순서/유실 보장 전송 */
   send(m: NetMsg) {
-    this.raw(m);
+    this.channel?.send(m);
   }
+
+  get pending() { return this.channel?.pending ?? 0; }
 
   close() {
     window.clearInterval(this.timer);

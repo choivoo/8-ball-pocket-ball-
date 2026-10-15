@@ -1,6 +1,6 @@
 import type { PhysEvent } from '../physics/types';
 
-export interface AudioSettings { master: number; sfx: number; ambience: number; ambienceOn: boolean }
+export interface AudioSettings { master: number; sfx: number; ambience: number; ambienceOn: boolean; musicOn?: boolean; music?: number }
 
 /** 샘플 교체 가능한 구조: bank 에 AudioBuffer 를 등록하면 합성 대신 사용된다 */
 export type SampleName = 'cue' | 'ball' | 'cushion' | 'pocket' | 'drop';
@@ -30,6 +30,9 @@ export class AudioEngine {
   private master!: GainNode;
   private sfx!: GainNode;
   private amb!: GainNode;
+  private mus!: GainNode;
+  private musicTimer = 0;
+  private musicStep = 0;
   private noise!: AudioBuffer;
   private rollGain!: GainNode;
   private rollFilter!: BiquadFilterNode;
@@ -48,8 +51,8 @@ export class AudioEngine {
     this.master = ctx.createGain();
     const comp = ctx.createDynamicsCompressor();
     comp.threshold.value = -14; comp.ratio.value = 5; comp.attack.value = 0.002; comp.release.value = 0.15;
-    this.sfx = ctx.createGain(); this.amb = ctx.createGain();
-    this.sfx.connect(this.master); this.amb.connect(this.master);
+    this.sfx = ctx.createGain(); this.amb = ctx.createGain(); this.mus = ctx.createGain();
+    this.sfx.connect(this.master); this.amb.connect(this.master); this.mus.connect(this.master);
     this.master.connect(comp); comp.connect(ctx.destination);
     // 화이트노이즈 버퍼
     const len = ctx.sampleRate * 2;
@@ -65,6 +68,7 @@ export class AudioEngine {
     src.start();
     this.apply();
     this.startAmbience();
+    this.startMusic();
   }
 
   apply() {
@@ -73,6 +77,7 @@ export class AudioEngine {
     this.master.gain.value = s.master;
     this.sfx.gain.value = s.sfx;
     this.amb.gain.value = s.ambienceOn ? s.ambience * 0.5 : 0;
+    this.mus.gain.value = s.musicOn === false ? 0 : (s.music ?? 0.35) * 0.5;
   }
 
   private startAmbience() {
@@ -92,6 +97,52 @@ export class AudioEngine {
       setTimeout(tick, 2500 + Math.random() * 6000);
     };
     setTimeout(tick, 3000);
+  }
+
+  // ------------------------------------------------------------ 배경 음악 (생성형 라운지 재즈)
+  /** ii–V–I–vi 코드 진행 위에 패드 / 베이스 / 펜타토닉 멜로디를 무작위로 얹는다. 외부 음원 불필요. */
+  private startMusic() {
+    const ctx = this.ctx!;
+    const bpm = 72, beat = 60 / bpm;
+    const prog = [
+      [50, 53, 57, 60, 64], // Dm9
+      [43, 53, 57, 59, 64], // G13
+      [48, 52, 55, 59, 62], // Cmaj9
+      [45, 52, 55, 58, 63], // A7alt
+    ];
+    const scale = [62, 65, 67, 69, 72, 74, 77, 79];
+    const mtof = (m: number) => 440 * Math.pow(2, (m - 69) / 12);
+    let next = ctx.currentTime + 0.5;
+    const note = (m: number, t: number, dur: number, vol: number, type: OscillatorType, attack = 0.01, lp = 3000) => {
+      const o = ctx.createOscillator(); o.type = type; o.frequency.value = mtof(m);
+      const f = ctx.createBiquadFilter(); f.type = 'lowpass'; f.frequency.value = lp;
+      const g = ctx.createGain();
+      g.gain.setValueAtTime(0.0001, t); g.gain.linearRampToValueAtTime(vol, t + attack); g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+      o.connect(f); f.connect(g); g.connect(this.mus);
+      o.start(t); o.stop(t + dur + 0.05);
+    };
+    const schedule = () => {
+      if (!this.ctx) return;
+      while (next < ctx.currentTime + 2.5) {
+        const bar = Math.floor(this.musicStep / 4) % 4, b = this.musicStep % 4;
+        const chord = prog[bar];
+        if (b === 0) for (const m of chord) note(m, next, beat * 4.2, 0.05, 'triangle', 0.35, 1200);
+        if (b === 0 || b === 2) note(chord[0] - 12, next, beat * 1.8, 0.16, 'sine', 0.02, 500);
+        // 멜로디: 확률적으로, 스윙 느낌의 오프셋
+        if (Math.random() < 0.5) note(scale[Math.floor(Math.random() * scale.length)] + (Math.random() < 0.2 ? -12 : 0), next + (b % 2 ? beat * 0.17 : 0), beat * 1.6, 0.07, 'sine', 0.005, 2400);
+        if (Math.random() < 0.18) note(scale[Math.floor(Math.random() * scale.length)], next + beat * 0.5, beat * 1.2, 0.05, 'triangle', 0.005, 2000);
+        next += beat;
+        this.musicStep++;
+      }
+    };
+    schedule();
+    this.musicTimer = window.setInterval(schedule, 800);
+  }
+
+  tick() { if (this.ctx) this.tone(1400, 0.05, 0.12, 'square'); }
+  fanfare() {
+    if (!this.ctx) return;
+    [523, 659, 784, 1047].forEach((f, i) => this.tone(f, 0.45, 0.14, 'triangle', undefined, i * 0.12));
   }
 
   // ------------------------------------------------------------ 이벤트 연결

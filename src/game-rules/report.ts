@@ -3,7 +3,7 @@ import type { ShotReport } from './RuleSet';
 
 /** 월드 이벤트를 구독해 한 샷의 규칙 판정에 필요한 정보를 수집한다 */
 export class ShotRecorder {
-  report: ShotReport = { firstContact: null, pocketed: [], railAfterContact: false, railBalls: [], miscue: false };
+  report: ShotReport = { firstContact: null, pocketed: [], railAfterContact: false, railBalls: [], cueRailsBeforeContact: 0, miscue: false };
   private off: (() => void) | null = null;
 
   attach(world: World) {
@@ -14,6 +14,7 @@ export class ShotRecorder {
         if (r.firstContact === null && (e.a === 0 || e.b === 0)) r.firstContact = e.a === 0 ? e.b : e.a;
       } else if (e.type === 'cushion') {
         if (!r.railBalls.includes(e.id)) r.railBalls.push(e.id);
+        if (e.id === 0 && r.firstContact === null) r.cueRailsBeforeContact++;
         if (r.firstContact !== null) r.railAfterContact = true;
       } else if (e.type === 'pocket') {
         r.pocketed.push(e.id);
@@ -33,6 +34,6 @@ export class ShotRecorder {
     this.off = null;
   }
   reset() {
-    this.report = { firstContact: null, pocketed: [], railAfterContact: false, railBalls: [], miscue: false };
+    this.report = { firstContact: null, pocketed: [], railAfterContact: false, railBalls: [], cueRailsBeforeContact: 0, miscue: false };
   }
 }

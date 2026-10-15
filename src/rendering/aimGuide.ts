@@ -103,5 +103,6 @@ export class AimGuideView {
       this.ghost.position.set(info.hit.x, info.hit.y, R);
     }
   }
+  setColor(c: number) { (this.path.material as THREE.LineDashedMaterial).color.setHex(c); }
   hide() { this.group.visible = false; }
 }

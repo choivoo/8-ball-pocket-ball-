@@ -49,10 +49,11 @@ export const EightBall: RuleSet = {
   init(): RuleState {
     return {
       game: 'eightball', turn: 0, groups: [null, null], breakDone: false, ballInHand: true, inHandZone: 'head',
-      winner: null, endReason: '', pocketed: [], respot8: false, shots: 0, log: [],
+      winner: null, endReason: '', pocketed: [], respot: null, shots: 0, log: [],
     };
   },
   setupRack: rackEightBall,
+  isOwn(st, id) { const g = st.groups[st.turn]; return !g || id === 8 || groupOf(id) === g; },
   legalTargets(st, onTable) {
     const g = st.groups[st.turn];
     if (!g) return onTable.filter((id) => id !== 8 && id !== 0);
@@ -68,7 +69,7 @@ export const EightBall: RuleSet = {
     const scratch = rep.pocketed.includes(0);
     const objPocketed = rep.pocketed.filter((id) => id !== 0);
     const eightIn = objPocketed.includes(8);
-    let respot = false;
+    let respot: number | null = null;
     const myGroup = st.groups[me];
     const onTableBefore = (id: number) => !prev.pocketed.includes(id);
     st.shots++;
@@ -80,7 +81,7 @@ export const EightBall: RuleSet = {
       if (!legal) fouls.push('불완전 브레이크 (4개 이상의 공이 쿠션에 닿거나 포켓되어야 함)');
       st.breakDone = true;
       if (eightIn) {
-        respot = true;
+        respot = 8;
         msgs.push('브레이크에서 8번 공이 들어가 다시 놓습니다');
       }
       for (const id of objPocketed) if (id !== 8) st.pocketed.push(id);
@@ -129,7 +130,7 @@ export const EightBall: RuleSet = {
       }
       st.pocketed.push(8);
       for (const id of objPocketed) if (id !== 8) st.pocketed.push(id);
-      return finish(st, fouls, msgs, false);
+      return finish(st, fouls, msgs, null);
     }
 
     // 그룹 결정 (오픈 테이블에서 파울 없는 첫 포켓)
@@ -153,12 +154,12 @@ export const EightBall: RuleSet = {
     } else {
       st.turn = opp; st.ballInHand = false;
     }
-    return finish(st, fouls, msgs, false);
+    return finish(st, fouls, msgs, null);
   },
 };
 
-function finish(st: RuleState, fouls: string[], msgs: string[], respot: boolean): EvalResult {
-  st.respot8 = respot;
+function finish(st: RuleState, fouls: string[], msgs: string[], respot: number | null): EvalResult {
+  st.respot = respot;
   for (const f of fouls) st.log.push(`파울: ${f}`);
-  return { state: st, fouls, messages: msgs, respot8: respot };
+  return { state: st, fouls, messages: msgs, respot };
 }

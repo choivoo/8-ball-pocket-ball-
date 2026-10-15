@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import { TABLE } from '../../config/table';
 
-export type CamMode = 'aim' | 'top' | 'follow' | 'closeup';
+export type CamMode = 'aim' | 'top' | 'follow' | 'closeup' | 'rail';
 
 const damp = (k: number, dt: number) => 1 - Math.exp(-k * dt);
 const wrap = (a: number) => Math.atan2(Math.sin(a), Math.cos(a));
@@ -54,7 +54,8 @@ export class CameraRig {
     this.distance = Math.min(3.2, Math.max(0.45, this.distance));
   }
 
-  kick(amount: number) { this.shake = Math.min(1, this.shake + amount); }
+  reduceMotion = false;
+  kick(amount: number) { if (!this.reduceMotion) this.shake = Math.min(1, this.shake + amount); }
 
   snap() {
     this.yaw = this.aimYaw; this.pit = this.pitch; this.dist = this.distance;
@@ -84,6 +85,10 @@ export class CameraRig {
         break;
       case 'follow':
         goalTarget = this.followTarget; goalPit = 0.75; goalDist = 1.5; goalYaw = this.yaw;
+        break;
+      case 'rail':
+        // 레일 시점: 테이블 측면 낮은 위치에서 큐볼을 바라본다
+        goalPit = 0.16; goalDist = 1.9; goalYaw = this.aimYaw + Math.PI / 2;
         break;
       case 'closeup':
         goalTarget = this.closeTarget; goalPit = 0.5; goalDist = 0.55; goalFov = 38;

@@ -1,11 +1,15 @@
 import GUI from 'lil-gui';
 import { TABLE, HEAD_X, FOOT_X } from './config/table';
 import { defaultPhysics, clonePhysics } from './config/physics';
-import { saveSettings, isMobile, type Settings } from './config/settings';
+import { saveSettings, isMobile, defaultSettings, type Settings } from './config/settings';
 import { World } from './physics/world';
 import type { Ball, Shot } from './physics/types';
 import { SCENARIOS, SCENE_SETUPS } from './physics/scenarios';
 import { EightBall } from './game-rules/eightBall';
+import { NineBall } from './game-rules/nineBall';
+import { Profile, levelFromXp } from './meta/profile';
+import { launchConfetti } from './ui/confetti';
+import { buildDrills, placeCfg, starsFor, freeSpot, type DrillDef, type DrillCfg } from './drills/drills';
 import { ShotRecorder } from './game-rules/report';
 import type { RuleSet, RuleState, PlayerIdx } from './game-rules/RuleSet';
 import { groupOf } from './game-rules/RuleSet';
@@ -18,9 +22,11 @@ import { PoolAI, type AiLevel, AI_LEVEL_NAMES } from './ai/ai';
 import { OnlineSession, type NetMsg, type BallFull, type BallLite } from './net/online';
 
 const R = TABLE.ballRadius;
-type Mode = 'practice' | 'local' | 'ai' | 'online' | 'lab';
+type Mode = 'practice' | 'local' | 'ai' | 'online' | 'lab' | 'drill';
 type Phase = 'menu' | 'placing' | 'aiming' | 'shooting' | 'simulating' | 'thinking' | 'remote' | 'replay' | 'over' | 'lab';
 
+const EMOTES: Record<string, string> = { gg: 'GG', up: '👍', smile: '😀', sweat: '😅', fire: '🔥', think: '🤔' };
+interface Match { rules: 'eight' | 'nine'; raceTo: number; clock: number }
 interface ShotRecord { before: Ball[]; shot: Shot; rng: number; shooter: PlayerIdx }
 
 export class Game {
@@ -69,11 +75,36 @@ export class Game {
   private labShotPending: Shot | null = null;
   private labTimer = 0;
   private paused = false;
+  profile = new Profile();
+  match: Match = { rules: 'eight', raceTo: 1, clock: 0 };
+  score: [number, number] = [0, 0];
+  private matchOver = false;
+  private clockLeft: number | null = null;
+  private lastTickSec = -1;
+  private run = 0;
+  private gameFouls = 0;
+  private maxDeficit = 0;
+  private photo = false;
+  private replaySpeed = 1;
+  private lastBuzz = 0;
+  private slowTime = 0;
+  private profileSave = 0;
+  private sawAir = false;
+  private drills: DrillDef[] = buildDrills();
+  private drill: { def: DrillDef; idx: number; points: number; cfg: DrillCfg | null } | null = null;
+  private contactPos: { x: number; y: number } | null = null;
+  private cue0 = { x: 0, y: 0 };
+  private tutStep = -1;
+  private drillNeedSetup = false;
+  private timers: number[] = [];
+  /** 지연 실행 (게임이 바뀌면 취소되어 이전 게임의 팝업이 새 게임 위에 뜨지 않는다) */
+  private later(fn: () => void, ms: number) { this.timers.push(window.setTimeout(fn, ms)); }
+  private clearTimers() { for (const t of this.timers) clearTimeout(t); this.timers = []; }
 
   constructor(canvas: HTMLCanvasElement, public settings: Settings, root: HTMLElement) {
     this.world = new World(clonePhysics(defaultPhysics));
     this.view = new GameView(canvas, settings.quality);
-    this.audio.settings = { master: settings.master, sfx: settings.sfx, ambience: settings.ambience, ambienceOn: settings.ambienceOn };
+    this.audio.settings = { master: settings.master, sfx: settings.sfx, ambience: settings.ambience, ambienceOn: settings.ambienceOn, musicOn: settings.musicOn, music: settings.music };
     this.world.listeners.push((e) => { this.audio.handle(e); this.onPhysEvent(e); });
     this.ui = new UI(root, settings, {
       startPractice: () => this.startPractice(),
@@ -97,6 +128,29 @@ export class Game {
       togglePracticeEdit: () => this.toggleEdit(),
       rerack: () => this.rerack(),
       toggleDebug: () => this.toggleDebug(),
+      openProfile: () => this.ui.showProfile(),
+      openCustomize: () => this.ui.showCustomize(levelFromXp(this.profile.stats.xp).level),
+      openDrills: () => this.openDrills(),
+      startDrill: (id) => this.startDrill(id),
+      openHelp: () => { this.ui.showHelp(); if (this.ui.inGame && this.mode !== 'online') this.paused = true; },
+      startTutorial: () => this.startTutorial(),
+      photoMode: () => this.togglePhoto(),
+      fullscreen: () => this.toggleFullscreen(),
+      emote: (id) => this.sendEmote(id),
+      replaySpeed: (x) => { this.replaySpeed = x; },
+      camPreset: (n) => { this.view.rig.mode = n; },
+      lookChanged: (look) => { this.settings.look = look; saveSettings(this.settings); this.view.applyLook(look); },
+      nextGame: () => this.startFollowup((Date.now() & 0xffff) + 1, true),
+      resetSettings: () => { const keep = { playerName: this.settings.playerName, tutorialDone: this.settings.tutorialDone, look: this.settings.look }; Object.assign(this.settings, defaultSettings, keep); this.applySettings(); this.view.applyLook(this.settings.look); },
+    });
+    this.ui.profile = this.profile;
+    this.profile.onUnlock = (a) => { this.ui.toast(`🏆 업적 달성: ${a.name}  (+${a.xp} XP)`, 'good', 3800); this.audio.chime(true); };
+    this.profile.onLevelUp = (lv) => this.ui.toast(`⭐ 레벨 ${lv} 달성!`, 'good', 3800);
+    this.view.applyLook(this.settings.look);
+    this.applySettings();
+    canvas.addEventListener('click', () => { if (this.photo) this.savePhoto(); });
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'hidden') { this.profile.save(); if (this.mode !== 'online' && this.phase !== 'menu' && !this.ui.menuOpen) this.pause(); }
     });
     this.controls = new Controls(canvas, this.view, () => this.settings);
     this.controls.onFire = (V) => this.fireStroke(V);
@@ -105,7 +159,10 @@ export class Game {
     this.controls.onEditPointer = (t, x, y) => this.editPointer(t, x, y);
     this.controls.onAimChanged = () => this.onAimChanged();
     this.controls.onToggleTop = () => this.toggleTop();
-    this.controls.onPause = () => this.pause();
+    this.controls.onPause = () => { if (this.photo) this.togglePhoto(); else this.pause(); };
+    this.controls.onHelp = () => { if (!this.ui.menuOpen) this.ui.showHelp(); };
+    this.controls.onFullscreen = () => this.toggleFullscreen();
+    this.controls.onPhoto = () => this.togglePhoto();
     this.controls.onReplay = () => this.startReplay();
     this.controls.onConfirm = () => (this.phase === 'lab' ? this.labRerun() : this.confirmPlace());
     window.addEventListener('pointerdown', () => { this.audio.init(); this.audio.apply(); }, { capture: true });
@@ -126,14 +183,33 @@ export class Game {
     this.remoteShot = false; this.pendingResult = null;
   }
 
-  private beginGame(mode: Mode, names: [string, string], subs: [string, string], seed: number) {
+  private matchFromSettings(): Match {
+    return { rules: this.settings.rules, raceTo: Math.max(1, this.settings.raceTo), clock: this.settings.shotClock };
+  }
+
+  private beginGame(mode: Mode, names: [string, string], subs: [string, string], seed: number, match?: Match, keepScore = false) {
+    this.clearTimers();
+    this.match = match ? { ...match } : this.matchFromSettings();
+    if (mode === 'practice' || mode === 'drill') this.match = { ...this.match, raceTo: 1, clock: 0 };
+    this.rules = this.match.rules === 'nine' ? NineBall : EightBall;
+    if (this.ai) this.ai = new PoolAI(this.world.cfg, this.aiLevel, this.rules);
+    if (!keepScore) this.score = [0, 0];
+    this.matchOver = false;
+    this.run = 0; this.gameFouls = 0; this.maxDeficit = 0;
+    this.ui.inGame = true;
+    this.ui.setScore(this.score, this.match.raceTo);
+    this.ui.setOnlineTools(mode === 'online');
+    this.ui.setDrillHud(null);
     this.mode = mode;
     this.names = names; this.subs = subs;
     this.ui.closeOverlay();
     this.ui.setGameUiVisible(true);
     this.ui.setPracticeTools(mode === 'practice');
+    this.ui.showReplayBar(false);
     this.editing = false; this.controls.editing = false; this.ui.setEditActive(false);
     this.resetTable(seed);
+    this.view.setTargetRing(null);
+    if (mode === 'drill' && this.drill) { this.state = EightBall.init(); this.setupDrillAttempt(); }
     this.view.syncBalls(this.world.balls, this.world.time);
     this.paused = false;
     this.view.rig.distance = 1.15; this.view.rig.pitch = 0.42;
@@ -141,10 +217,12 @@ export class Game {
     this.beginTurn();
   }
 
-  private startPractice() {
+  private startPractice(tutorial = false) {
     this.ai = null; this.net = null; this.firstTurn = 0;
+    this.drill = null;
     this.beginGame('practice', [this.settings.playerName, ''], ['', ''], (Date.now() & 0xffff) + 1);
-    this.ui.toast('연습 모드 — ✋로 공을 자유롭게 옮길 수 있어요', '');
+    if (tutorial || !this.settings.tutorialDone) { this.tutStep = 0; this.showTutStep(); }
+    else this.ui.toast('연습 모드 — ✋로 공을 자유롭게 옮길 수 있어요', '');
   }
   private startLocal(a: string, b: string) {
     this.ai = null; this.net = null;
@@ -157,7 +235,10 @@ export class Game {
     this.beginGame('ai', [name, `AI ${AI_LEVEL_NAMES[level]}`], ['', ''], (Date.now() & 0xffff) + 1);
   }
   private quitToMenu() {
+    this.clearTimers();
     this.closeNet();
+    this.drill = null; this.ui.setDrillHud(null); this.ui.setClock(null); this.ui.inGame = false; this.ui.coach(null); this.tutStep = -1;
+    this.view.setTargetRing(null); this.ui.showReplayBar(false); this.ui.setOnlineTools(false);
     this.phase = 'menu';
     this.aiBusy = false; this.aiAnim = null; this.shootAnim = null;
     this.controls.enabled = false; this.controls.placing = false;
@@ -167,15 +248,18 @@ export class Game {
     this.ui.showMenu();
   }
   private rematch() {
-    if (this.mode === 'online' && this.net) {
-      const seed = (Date.now() & 0xffff) + 1;
-      this.net.send({ t: 'rematch', seed });
-      this.firstTurn = this.firstTurn === 0 ? 1 : 0;
-      this.beginGame('online', this.names, this.subs, seed);
-      return;
-    }
+    if (this.mode === 'drill') { this.retryDrill(); return; }
+    const seed = (Date.now() & 0xffff) + 1;
+    if (this.mode === 'online' && this.net) this.net.send({ t: 'rematch', seed });
+    this.startFollowup(seed, false);
+  }
+
+  /** 다음 게임(매치 진행 중이면 점수 유지) 또는 새 매치 시작. 온라인에서는 양쪽이 같은 규칙으로 호출된다 */
+  private startFollowup(seed: number, announce: boolean) {
+    const keep = !this.matchOver && this.match.raceTo > 1;
     this.firstTurn = this.mode === 'practice' ? 0 : (this.firstTurn === 0 ? 1 : 0);
-    this.beginGame(this.mode, this.names, this.subs, (Date.now() & 0xffff) + 1);
+    if (announce && this.mode === 'online' && this.net) this.net.send({ t: 'rematch', seed });
+    this.beginGame(this.mode, this.names, this.subs, seed, this.match, keep);
   }
   private rerack() {
     this.state = this.rules.init(); this.state.turn = 0;
@@ -199,10 +283,11 @@ export class Game {
       if (m.t === 'hello') {
         guestName = m.name;
         const seed = (Date.now() & 0xffff) + 1;
-        net.send({ t: 'start', seed, hostName: name });
+        const mc = this.matchFromSettings();
+        net.send({ t: 'start', seed, hostName: name, rules: mc.rules, raceTo: mc.raceTo, clock: mc.clock });
         this.mySeat = 0; this.firstTurn = 0;
         this.ai = null;
-        this.beginGame('online', [name, guestName], ['나', '상대'], seed);
+        this.beginGame('online', [name, guestName], ['나', '상대'], seed, mc);
         this.bindNetGame(net);
       }
     };
@@ -217,7 +302,7 @@ export class Game {
     net.onMessage = (m) => {
       if (m.t === 'start') {
         this.mySeat = 1; this.firstTurn = 0; this.ai = null;
-        this.beginGame('online', [m.hostName, name], ['상대', '나'], m.seed);
+        this.beginGame('online', [m.hostName, name], ['상대', '나'], m.seed, { rules: m.rules, raceTo: m.raceTo, clock: m.clock });
         this.bindNetGame(net);
       }
     };
@@ -228,7 +313,37 @@ export class Game {
   }
   private bindNetGame(net: OnlineSession) {
     net.onMessage = (m) => this.onNetMessage(m);
+    net.onStatus = (st) => this.ui.setNetStatus(st === 'online' ? null : '⚠ 연결 불안정 — 재연결 중... (메시지는 자동 재전송됩니다)');
   }
+  private queuedShot: Extract<NetMsg, { t: 'shot' }> | null = null;
+  private startRemoteShot(m: Extract<NetMsg, { t: 'shot' }>) {
+    // 상대 샷: 정지 상태를 동기화한 뒤 같은 샷을 재현
+    for (const b of m.balls) {
+      const w = this.world.balls[b.id];
+      w.x = b.x; w.y = b.y; w.pocketed = b.pocketed; w.pocketIndex = b.pocketIndex;
+      w.vx = w.vy = w.vz = w.wx = w.wy = w.wz = 0; w.z = 0;
+    }
+    this.world.balls[0].pocketed = false;
+    this.world.rng.state = m.rng;
+    this.remoteShot = true;
+    this.pendingResult = this.pendingResult && this.pendingResult.rules.shots > m.no ? this.pendingResult : null;
+    this.waitingRemote = false;
+    this.lastShot = { before: this.world.snapshot(), shot: m.shot, rng: m.rng, shooter: this.state.turn };
+    this.shootAnim = { t: 0, dur: 0.45, from: 0.12 + Math.min(0.25, m.shot.speed * 0.03), shot: m.shot, auto: true };
+    this.phase = 'shooting';
+    this.controls.enabled = false;
+    this.view.aim.hide();
+  }
+
+  /** 상대와 상태가 어긋났을 때 전체 상태로 강제 동기화 */
+  private applyFullState(rules: RuleState, balls: BallFull[]) {
+    for (const f of balls) Object.assign(this.world.balls[f.id], f);
+    this.state = rules;
+    this.remoteShot = false; this.pendingResult = null; this.waitingRemote = false; this.afterEvalPending = false;
+    this.world.idle(0);
+    this.beginTurn();
+  }
+
   private onNetClosed() {
     if (this.phase === 'menu') return;
     this.net = null;
@@ -250,28 +365,31 @@ export class Game {
           this.world.balls[0].x = m.bih.x; this.world.balls[0].y = m.bih.y; this.world.balls[0].pocketed = false;
         }
         break;
-      case 'shot': {
-        // 상대 샷: 정지 상태를 동기화한 뒤 같은 샷을 재현
-        for (const b of m.balls) {
-          const w = this.world.balls[b.id];
-          w.x = b.x; w.y = b.y; w.pocketed = b.pocketed; w.pocketIndex = b.pocketIndex;
-        }
-        this.world.balls[0].pocketed = false;
-        this.world.rng.state = m.rng;
-        this.remoteShot = true;
-        this.lastShot = { before: this.world.snapshot(), shot: m.shot, rng: m.rng, shooter: this.state.turn };
-        this.shootAnim = { t: 0, dur: 0.45, from: 0.12 + Math.min(0.25, m.shot.speed * 0.03), shot: m.shot, auto: true };
-        this.phase = 'shooting';
-        this.view.aim.hide();
+      case 'shot':
+        if (m.no < this.state.shots) break; // 이미 처리한 샷 (중복)
+        if (this.phase === 'remote') this.startRemoteShot(m);
+        else this.queuedShot = m; // 아직 이전 턴 정리 중 → 다음 beginTurn 에서 처리
         break;
-      }
+      case 'need':
+        this.net?.send({ t: 'state', rules: this.state, balls: this.full() });
+        break;
+      case 'state':
+        if (m.rules.shots >= this.state.shots) this.applyFullState(m.rules, m.balls);
+        break;
+      case 'turnover':
+        if (m.rules.shots >= this.state.shots) { this.applyFullState(m.rules, m.balls); this.ui.toast(m.text, 'foul', 3000); }
+        break;
       case 'result':
+        if (m.rules.shots <= this.state.shots) break; // 중복
         this.pendingResult = m;
         if (this.phase === 'simulating' && !this.world.isMoving()) this.applyRemoteResult();
         break;
       case 'rematch':
-        this.firstTurn = this.firstTurn === 0 ? 1 : 0;
-        this.beginGame('online', this.names, this.subs, m.seed);
+        this.ui.closeOverlay();
+        this.startFollowup(m.seed, false);
+        break;
+      case 'emote':
+        this.ui.showEmote(EMOTES[m.id] ?? '👍', false);
         break;
       case 'quit':
         this.onNetClosed();
@@ -291,10 +409,18 @@ export class Game {
   }
 
   private refreshHud() {
-    this.ui.setPlayers(this.state, this.names, this.subs, this.onTableIds());
+    const on = this.onTableIds();
+    this.ui.setScore(this.score, this.match.raceTo);
+    this.ui.setPlayers(this.state, this.names, this.subs, on);
+    if (this.state.game === 'eightball' && this.state.groups[0]) {
+      const me = this.mode === 'online' ? this.mySeat : 0;
+      const left = (g: 'solid' | 'stripe' | null) => on.filter((id) => id !== 8 && groupOf(id) === g).length;
+      this.maxDeficit = Math.max(this.maxDeficit, left(this.state.groups[me]) - left(this.state.groups[me === 0 ? 1 : 0]));
+    }
   }
 
   private beginTurn() {
+    if (this.drillNeedSetup && this.drill) { this.drillNeedSetup = false; this.setupDrillAttempt(); }
     if (this.state.winner !== null) { this.finishGame(); return; }
     this.refreshHud();
     this.view.setGhostBall(null);
@@ -318,13 +444,15 @@ export class Game {
       this.controls.enabled = false; this.controls.placing = false;
       this.ui.showGauge(false); this.ui.setAimControlsVisible(false); this.ui.showPlaceBar(false);
       this.ui.setStatus(`${this.names[this.state.turn]}의 차례`);
-      if (this.state.ballInHand) {
-        cue.pocketed = false;
-        if (cue.x === 0 && cue.y === 0 || true) { cue.x = HEAD_X; cue.y = 0; }
-      }
+      if (this.state.ballInHand) { cue.pocketed = false; cue.x = HEAD_X; cue.y = 0; }
+      if (this.queuedShot) { const q = this.queuedShot; this.queuedShot = null; if (q.no >= this.state.shots) this.startRemoteShot(q); }
     }
     this.view.rig.setTargetPhys(cue.x, cue.y);
     this.view.rig.aimYaw = this.controls.aim.angle;
+    // 샷 클락: AI 차례에는 없음. 온라인 상대 차례는 표시만 하고 상대 쪽에서 판정한다.
+    this.clockLeft = this.match.clock > 0 && this.mode !== 'practice' && this.mode !== 'drill' && this.mode !== 'lab' && who !== 'ai' ? this.match.clock : null;
+    this.lastTickSec = -1;
+    if (this.clockLeft === null) this.ui.setClock(null);
   }
 
   private startAiming() {
@@ -348,7 +476,7 @@ export class Game {
     this.ui.setStatus(`${this.names[this.state.turn]}의 차례${this.state.ballInHand ? '' : ''}`);
     this.ui.setHint(gauge ? '드래그: 조준 · 오른쪽 게이지를 아래로 당겼다 놓으면 발사' : '드래그: 조준 · 우클릭(또는 Space) 누른 채 마우스를 아래로 당겼다 위로 밀면 발사 · Shift: 미세 조준');
     this.syncAimUi();
-    if (this.mode !== 'practice') this.ui.toast(`${this.names[this.state.turn]}의 차례`, '', 1400);
+    if (this.mode !== 'practice' && this.mode !== 'drill') this.ui.toast(`${this.names[this.state.turn]}의 차례`, '', 1400);
   }
 
   private startPlacing() {
@@ -455,12 +583,16 @@ export class Game {
     if (!this.remoteShot && this.phase !== 'replay') {
       this.lastShot = { before: w.snapshot(), shot: { ...shot }, rng: w.rng.state, shooter: this.state.turn };
       if (this.net && this.mode === 'online') {
-        this.net.send({ t: 'shot', shot, balls: this.lite(), rng: w.rng.state });
+        this.net.send({ t: 'shot', shot, balls: this.lite(), rng: w.rng.state, no: this.state.shots });
       }
     }
     if (!this.remoteShot && this.phase !== 'replay') { this.recorder.attach(w); }
     w.strike(shot);
     this.settleHandled = false;
+    this.sawAir = false;
+    this.contactPos = null;
+    this.cue0 = { x: w.balls[0].x, y: w.balls[0].y };
+    this.strikeAt = w.time;
     this.view.rig.kick(Math.min(1, shot.speed / 6));
     this.followThrough = 1;
     this.phase = this.phase === 'replay' ? 'replay' : 'simulating';
@@ -476,6 +608,11 @@ export class Game {
   }
 
   private onPhysEvent(e: import('./physics/types').PhysEvent) {
+    if (e.type === 'cue') this.buzz(e.miscue ? [12, 20, 12] : 14);
+    else if (e.type === 'ballBall' && e.speed > 1.5) this.buzz(8);
+    else if (e.type === 'pocket') this.buzz([10, 30, 22]);
+    if (e.type === 'land') this.sawAir = true;
+    if (e.type === 'ballBall' && (e.a === 0 || e.b === 0) && !this.contactPos) this.contactPos = { x: this.world.balls[0].x, y: this.world.balls[0].y };
     if (e.type === 'cushion' || e.type === 'ballBall') {
       this.view.rig.kick(Math.min(0.4, e.speed * 0.05));
     }
@@ -509,16 +646,55 @@ export class Game {
       return;
     }
     const rep = this.recorder.report;
+    if (this.mode === 'drill' && this.drill) { this.drillSettled(rep); return; }
     const res = this.rules.evaluate(this.state, rep);
-    this.applyEvaluation(res.state, res.fouls, res.messages, res.respot8);
+    this.recordStats(rep, this.state, res);
+    this.applyEvaluation(res.state, res.fouls, res.messages, res.respot);
     if (this.net && this.mode === 'online') {
-      this.net.send({ t: 'result', rules: this.state, balls: this.full(), fouls: res.fouls, messages: res.messages, respot: res.respot8 });
+      this.net.send({ t: 'result', rules: this.state, balls: this.full(), fouls: res.fouls, messages: res.messages, respot: res.respot });
     }
     this.afterEvaluation();
   }
   private waitingRemote = false;
 
-  private applyEvaluation(next: RuleState, fouls: string[], msgs: string[], respot: boolean) {
+  /** 내 샷의 결과를 프로필 통계/업적/XP 에 반영 */
+  private recordStats(rep: import('./game-rules/RuleSet').ShotReport, before: RuleState, res: import('./game-rules/RuleSet').EvalResult) {
+    const shooter = before.turn;
+    if (this.mode === 'lab' || this.mode === 'drill' || this.controller(shooter) !== 'human') return;
+    const obj = rep.pocketed.filter((id) => id !== 0);
+    const ls = this.lastShot;
+    const shot = ls?.shot;
+    this.gameFouls += res.fouls.length;
+    const keepsTurn = !res.fouls.length && res.state.turn === shooter && res.state.winner === null;
+    this.run = !res.fouls.length && obj.length > 0 ? this.run + obj.length : 0;
+    let longest = 0, banks = 0;
+    for (const id of obj) {
+      const o0 = ls?.before[id], c0 = ls?.before[0];
+      const pi = this.world.balls[id].pocketIndex;
+      const pk = this.world.geom.pockets[pi];
+      if (o0 && c0 && pk) longest = Math.max(longest, Math.hypot(c0.x - o0.x, c0.y - o0.y) + Math.hypot(o0.x - pk.mx, o0.y - pk.my));
+      if (rep.railBalls.includes(id)) banks++;
+    }
+    void keepsTurn;
+    const wasBreak = !before.breakDone;
+    this.profile.update((s) => {
+      s.shots++; s.pots += obj.length; s.fouls += res.fouls.length;
+      if (rep.pocketed.includes(0)) s.scratches++;
+      if (wasBreak) { s.breaks++; if (obj.length) s.breakPots++; }
+      s.bestRun = Math.max(s.bestRun, this.run);
+      s.longestPot = Math.max(s.longestPot, longest);
+      s.bankPots += banks;
+      if (shot && this.sawAir && shot.elevation > 0.5) s.jumps++;
+      if (shot && shot.elevation > 0.35 && Math.abs(shot.a) > 0.25) s.massé++;
+    });
+    if (banks) this.ui.toast('🎯 뱅크샷!', 'good', 1600);
+    else if (longest > 2) this.ui.toast('🎯 장거리 포켓!', 'good', 1600);
+    if (this.run >= 3) this.ui.toast(`🔥 ${this.run}연속 포켓!`, 'good', 1600);
+    if (obj.length) this.profile.addXp(obj.length * 5);
+    this.profile.save();
+  }
+
+  private applyEvaluation(next: RuleState, fouls: string[], msgs: string[], respot: number | null) {
     const w = this.world;
     const prevTurn = this.state.turn;
     this.state = next;
@@ -526,7 +702,7 @@ export class Game {
     // 큐볼 스크래치: 큐볼 복귀 (볼 인 핸드)
     const cue = w.balls[0];
     if (cue.pocketed || Math.abs(cue.x) > 5) { cue.pocketed = false; cue.x = HEAD_X; cue.y = 0; cue.vx = cue.vy = 0; }
-    if (respot) this.respotEight();
+    if (respot !== null) this.respotBall(respot);
     for (const m of msgs) this.ui.toast(m, 'good', 2400);
     for (const f of fouls) this.ui.toast(f, 'foul', 3200);
     if (fouls.length) {
@@ -540,14 +716,14 @@ export class Game {
   private practiceCleared() {
     this.state.winner = null;
     this.ui.toast('8번 공 — 라운드 종료! 다시 랙합니다', 'good', 2500);
-    setTimeout(() => { if (this.mode === 'practice' && this.phase !== 'menu') this.rerack(); }, 2600);
+    this.later(() => { if (this.mode === 'practice' && this.phase !== 'menu') this.rerack(); }, 2600);
   }
 
-  private respotEight() {
-    const b = this.world.balls[8];
+  private respotBall(id: number) {
+    const b = this.world.balls[id];
     b.pocketed = false; b.vx = b.vy = 0;
     let x = FOOT_X; const y = 0;
-    const free = (xx: number) => this.world.balls.every((o) => o.id === 8 || o.pocketed || Math.hypot(o.x - xx, o.y - y) > 2.05 * R);
+    const free = (xx: number) => this.world.balls.every((o) => o.id === id || o.pocketed || Math.hypot(o.x - xx, o.y - y) > 2.05 * R);
     while (!free(x) && x < TABLE.halfL - R * 1.5) x += R * 0.5;
     b.x = x; b.y = y;
   }
@@ -575,6 +751,7 @@ export class Game {
   private finishGame() {
     this.phase = 'over';
     this.controls.enabled = false;
+    this.clockLeft = null; this.ui.setClock(null);
     this.ui.showGauge(false); this.ui.setAimControlsVisible(false); this.ui.showPlaceBar(false);
     this.view.setCue({ visible: false, x: 0, y: 0, z: 0, angle: 0, elevation: 0, a: 0, b: 0, pull: 0 });
     const win = this.state.winner as PlayerIdx;
@@ -582,9 +759,28 @@ export class Game {
     let youWon: boolean | null = null;
     if (this.mode === 'ai') youWon = win === 0;
     if (this.mode === 'online') youWon = win === this.mySeat;
+    this.score[win]++;
+    this.matchOver = this.score[win] >= this.match.raceTo;
+    this.ui.setScore(this.score, this.match.raceTo);
+    this.refreshHud();
+    let xp = 0;
+    if (this.mode !== 'practice' && this.mode !== 'lab') {
+      xp = 20 + (youWon ? 60 + (this.mode === 'ai' ? this.aiLevel * 30 : this.mode === 'online' ? 40 : 0) : 0) + (this.matchOver && this.match.raceTo > 1 && youWon ? 60 : 0);
+      this.profile.update((s) => {
+        s.games++;
+        if (this.mode === 'online') { s.onlineGames++; if (youWon) s.onlineWins++; }
+        if (youWon === true) { s.wins++; if (this.mode === 'ai') s.aiWins[this.aiLevel]++; if (this.gameFouls === 0) s.achievements['_clean'] = Date.now(); if (this.maxDeficit >= 3) s.achievements['_comeback'] = Date.now(); }
+        else if (youWon === false) s.losses++;
+      });
+      this.profile.addXp(xp);
+      this.profile.save();
+    }
     this.audio.chime(youWon !== false);
+    if (youWon !== false) { this.audio.fanfare(); launchConfetti(); }
+    this.buzz([30, 40, 60]);
     this.view.rig.mode = 'top';
-    setTimeout(() => this.ui.showResult(wn, this.state.endReason, youWon, this.state.shots), 700);
+    const match = { score: [...this.score] as [number, number], raceTo: this.match.raceTo, names: this.names, matchOver: this.matchOver, xp };
+    this.later(() => this.ui.showResult(wn, this.state.endReason, youWon, this.state.shots, match), 900);
   }
 
   // ================================================================== AI
@@ -696,13 +892,16 @@ export class Game {
 
   private pause() {
     if (this.phase === 'menu' || this.ui.menuOpen) return;
-    this.paused = true;
+    if (this.mode !== 'online') this.paused = true; // 온라인에서는 시간이 멈추지 않는다
     this.ui.showPause();
   }
 
   private applySettings() {
     saveSettings(this.settings);
-    this.audio.settings = { master: this.settings.master, sfx: this.settings.sfx, ambience: this.settings.ambience, ambienceOn: this.settings.ambienceOn };
+    this.audio.settings = { master: this.settings.master, sfx: this.settings.sfx, ambience: this.settings.ambience, ambienceOn: this.settings.ambienceOn, musicOn: this.settings.musicOn, music: this.settings.music };
+    this.ui.root.style.setProperty('--ui', String(this.settings.uiScale));
+    this.view.setAimColor(this.settings.aimColor);
+    this.view.rig.reduceMotion = this.settings.reduceMotion;
     this.audio.apply();
     if (this.settings.quality !== this.view.quality.name) this.view.setQuality(this.settings.quality);
     if (this.phase === 'aiming') this.ui.showGauge(this.settings.control === 'gauge' || isMobile());
@@ -764,6 +963,148 @@ export class Game {
     this.gui = g;
   }
 
+  private timeoutTurn() {
+    const me = this.state.turn, opp: PlayerIdx = me === 0 ? 1 : 0;
+    const st: RuleState = { ...this.state, groups: [...this.state.groups] as RuleState['groups'], pocketed: [...this.state.pocketed], log: [...this.state.log, '파울: 시간 초과'] };
+    st.shots++; st.turn = opp; st.ballInHand = true; st.inHandZone = st.breakDone ? 'any' : 'head';
+    this.state = st;
+    this.controls.cancel(); this.view.aim.hide();
+    this.gameFouls++;
+    this.audio.chime(false);
+    this.ui.toast('시간 초과! 파울 — 상대 볼 인 핸드', 'foul', 2800);
+    if (this.mode === 'online' && this.net) this.net.send({ t: 'turnover', rules: st, balls: this.full(), text: '상대가 시간 초과 — 볼 인 핸드' });
+    this.refreshHud();
+    this.beginTurn();
+  }
+
+  // ================================================================== 드릴
+  private openDrills() {
+    this.drills = buildDrills();
+    this.ui.showDrills(this.drills.map((d) => ({ id: d.id, name: d.name, desc: d.desc, attempts: d.attempts, best: this.profile.stats.drillBest[d.id] ?? 0 })));
+  }
+
+  private startDrill(id: string) {
+    const def = this.drills.find((d) => d.id === id);
+    if (!def) return;
+    this.ai = null; this.net = null; this.firstTurn = 0;
+    this.drill = { def, idx: 0, points: 0, cfg: null };
+    this.beginGame('drill', [def.name, ''], ['드릴', ''], 5, { rules: 'eight', raceTo: 1, clock: 0 });
+  }
+  private retryDrill() { if (this.drill) this.startDrill(this.drill.def.id); }
+
+  /** 드릴의 현재 시도 배치 */
+  private setupDrillAttempt() {
+    const d = this.drill!;
+    const w = this.world;
+    this.state = EightBall.init();
+    this.state.breakDone = true; this.state.ballInHand = false; this.state.turn = 0;
+    if (d.def.id === 'break') {
+      EightBall.setupRack(w, 11 + d.idx * 7);
+      this.state.breakDone = false; this.state.ballInHand = false;
+      d.cfg = null;
+    } else {
+      const cfg = d.def.setup(w, d.idx);
+      if (cfg) d.cfg = cfg;
+    }
+    this.view.setTargetRing(d.cfg?.target ?? null);
+    this.updateDrillHud();
+  }
+  private updateDrillHud() {
+    const d = this.drill!;
+    this.ui.setDrillHud(`<b>${d.def.name}</b> · 시도 ${Math.min(d.idx + 1, d.def.attempts)}/${d.def.attempts} · 점수 ${d.points.toFixed(d.points % 1 ? 1 : 0)}/${d.def.maxPoints}`);
+  }
+
+  /** 드릴 샷 판정 */
+  private drillSettled(rep: import('./game-rules/RuleSet').ShotReport) {
+    const d = this.drill!;
+    const res = d.def.judge({ rep, world: this.world, contact: this.contactPos, cue0: this.cue0, cfg: d.cfg });
+    d.points += res.points;
+    d.idx++;
+    this.ui.toast(res.msg, res.points >= 1 ? 'good' : res.points > 0 ? '' : 'foul', 1800);
+    const cue = this.world.balls[0];
+    const finished = d.idx >= d.def.attempts || (d.def.done?.(this.world, d.points) ?? false);
+    if (finished) { this.finishDrill(); return; }
+    if (d.def.persistent) {
+      if (cue.pocketed) { cue.pocketed = false; const p = freeSpot(this.world); cue.x = p.x; cue.y = p.y; }
+      cue.vx = cue.vy = 0;
+    } else this.drillNeedSetup = true;
+    this.updateDrillHud();
+    this.afterEvalPending = true; this.settleTimer = -0.8; this.phase = 'simulating';
+  }
+
+  private finishDrill() {
+    const d = this.drill!;
+    const stars = starsFor(d.points, d.def.maxPoints);
+    const prev = this.profile.stats.drillBest[d.def.id] ?? 0;
+    this.profile.update((s) => { if (stars >= 1) s.drillsDone++; if (stars > (s.drillBest[d.def.id] ?? 0)) s.drillBest[d.def.id] = stars; });
+    if (stars > prev) this.profile.addXp(40 * (stars - prev));
+    this.profile.save();
+    if (stars >= 1) { this.audio.fanfare(); if (stars === 3) launchConfetti(2500); }
+    this.phase = 'over'; this.controls.enabled = false;
+    this.view.setTargetRing(null);
+    this.view.setCue({ visible: false, x: 0, y: 0, z: 0, angle: 0, elevation: 0, a: 0, b: 0, pull: 0 });
+    this.ui.setDrillHud(null);
+    this.ui.showGauge(false); this.ui.setAimControlsVisible(false);
+    const name = d.def.name;
+    this.later(() => this.ui.showDrillResult(name, stars, `점수 ${d.points.toFixed(1)} / ${d.def.maxPoints}${stars > prev && stars > 0 ? ` · 새 기록! +${40 * (stars - prev)} XP` : ''}`, () => this.retryDrill(), () => { this.quitToMenu(); this.openDrills(); }), 700);
+  }
+
+  // ================================================================== 튜토리얼
+  private startTutorial() {
+    this.startPractice(true);
+  }
+  private static TUT = [
+    '<b>환영합니다!</b><br>화면을 <b>드래그</b>해서 조준 방향을 돌려보세요. (Shift = 미세 조준, ←→ 키도 가능)',
+    '왼쪽 아래 <b>흰 공(타점)</b>을 눌러 스핀을 줄 수 있어요. 위=밀어치기, 아래=끌어치기, 좌우=회전. 점선 원 밖은 <b>미스큐</b>!',
+    '<b>↑↓ 키</b>(또는 +/−)로 큐 각도를 올리면 <b>점프·마세</b> 샷을 칠 수 있어요.',
+    '<b>발사:</b> 우클릭(또는 Space)을 누른 채 마우스를 <b>아래로 당겼다가 위로 확</b> 밀어요. 미는 속도가 파워! 모바일은 오른쪽 <b>게이지</b>를 아래로 당겼다 놓으세요.',
+    '공을 넣으면 계속 칠 수 있어요. 첫 포켓으로 <b>솔리드/스트라이프</b>가 정해집니다. 파울이면 상대가 큐볼을 원하는 곳에 놓아요.',
+    '<b>T</b> 카메라 전환 · <b>P</b> 리플레이 · <b>H</b> 도움말 · <b>F2</b> 포토 모드. 이제 즐겨보세요! 🎱',
+  ];
+  private showTutStep() {
+    if (this.tutStep < 0) { this.ui.coach(null); return; }
+    if (this.tutStep >= Game.TUT.length) {
+      this.tutStep = -1; this.ui.coach(null);
+      this.settings.tutorialDone = true; saveSettings(this.settings);
+      return;
+    }
+    const last = this.tutStep === Game.TUT.length - 1;
+    this.ui.coach(Game.TUT[this.tutStep], last ? '시작하기' : '다음', () => { this.tutStep++; this.showTutStep(); });
+  }
+
+  // ================================================================== 편의 기능
+  private togglePhoto() {
+    if (this.phase === 'menu') return;
+    this.photo = !this.photo;
+    this.ui.setPhotoMode(this.photo);
+  }
+  private savePhoto() {
+    try {
+      const url = this.view.capture();
+      const a = document.createElement('a');
+      a.href = url; a.download = `pool3d-${Date.now()}.png`;
+      document.body.append(a); a.click(); a.remove();
+      this.ui.toast('사진을 저장했습니다 📷', 'good', 1500);
+    } catch { this.ui.toast('사진 저장에 실패했습니다', 'foul', 1500); }
+  }
+  private toggleFullscreen() {
+    const d = document as any, root = document.documentElement as any;
+    if (d.fullscreenElement) void d.exitFullscreen?.();
+    else if (root.requestFullscreen) void root.requestFullscreen().catch(() => this.ui.toast('전체화면을 사용할 수 없습니다', 'foul', 1500));
+    else this.ui.toast('이 브라우저는 전체화면을 지원하지 않습니다 (홈 화면에 추가해 보세요)', '', 2500);
+  }
+  private sendEmote(id: string) {
+    this.ui.showEmote(EMOTES[id] ?? '👍', true);
+    if (this.net && this.mode === 'online') this.net.send({ t: 'emote', id });
+  }
+  private buzz(pattern: number | number[]) {
+    if (!this.settings.haptics || !navigator.vibrate) return;
+    const now = performance.now();
+    if (now - this.lastBuzz < 60) return;
+    this.lastBuzz = now;
+    try { navigator.vibrate(pattern); } catch { /* 미지원 */ }
+  }
+
   // ================================================================== 프레임
   private sendAim() {
     if (!this.net || this.mode !== 'online') return;
@@ -779,6 +1120,30 @@ export class Game {
     const dt = Math.min(dtRaw, 0.05);
     this.fps = this.fps * 0.95 + (1 / Math.max(dtRaw, 1e-3)) * 0.05;
     if (this.cineCooldown > 0) this.cineCooldown -= dt;
+    if (this.phase !== 'menu' && !this.paused) {
+      this.profile.stats.playSeconds += dt;
+      this.profileSave += dt;
+      if (this.profileSave > 20) { this.profileSave = 0; this.profile.save(); }
+      // 샷 클락
+      if (this.clockLeft !== null && (this.mode === 'online' || !this.ui.menuOpen) && ['aiming', 'placing', 'remote'].includes(this.phase)) {
+        this.clockLeft -= dt;
+        this.ui.setClock(this.clockLeft);
+        const sec = Math.ceil(this.clockLeft);
+        if (this.clockLeft <= 5 && sec !== this.lastTickSec && sec > 0 && this.phase !== 'remote') { this.lastTickSec = sec; this.audio.tick(); this.buzz(10); }
+        if (this.clockLeft <= 0 && this.phase !== 'remote') { this.clockLeft = null; this.ui.setClock(null); this.timeoutTurn(); return; }
+      } else if (['shooting', 'simulating', 'thinking', 'replay'].includes(this.phase)) this.ui.setClock(null);
+      // 자동 품질 조절: 연속으로 느리면 한 단계 낮춘다
+      if (this.settings.autoQuality && dtRaw < 0.25) {
+        this.slowTime = dtRaw > 1 / 24 ? this.slowTime + dtRaw : Math.max(0, this.slowTime - dtRaw * 2);
+        if (this.slowTime > 4 && this.settings.quality !== 'low') {
+          this.settings.quality = this.settings.quality === 'high' ? 'medium' : 'low';
+          this.slowTime = 0; saveSettings(this.settings);
+          this.view.setQuality(this.settings.quality);
+          this.ui.toast(`성능을 위해 그래픽 품질을 '${this.settings.quality === 'medium' ? '중간' : '낮음'}'으로 낮췄습니다`, '', 3000);
+        }
+      }
+    }
+    for (const b of this.world.balls) if (b.z > 0.01) { this.sawAir = true; break; }
     const w = this.world;
     const cue = w.balls[0];
     const rig = this.view.rig;
@@ -897,7 +1262,7 @@ export class Game {
     this.view.syncBalls(w.balls, w.time);
     this.view.render(dt);
     this.fpsAcc += dtRaw; this.fpsN++;
-    if (this.fpsAcc > 0.5) { this.ui.setStats(this.gui ? `${(this.fpsN / this.fpsAcc).toFixed(0)} fps · t=${w.time.toFixed(1)}s` : ''); this.fpsAcc = 0; this.fpsN = 0; }
+    if (this.fpsAcc > 0.5) { this.ui.setStats(this.gui || this.settings.showFps ? `${(this.fpsN / this.fpsAcc).toFixed(0)} fps · ${this.view.quality.name}` : ''); this.fpsAcc = 0; this.fpsN = 0; }
   }
 
   private drawCue(cue: Ball, angle: number, elev: number, a: number, b: number, pull: number) {
@@ -946,6 +1311,15 @@ export class Game {
       if (this.settleTimer >= 0) { this.afterEvalPending = false; this.beginTurn(); }
       return;
     }
+    // 안전장치: 비정상적으로 오래 굴러가는 시뮬레이션은 강제 정지
+    if (this.phase === 'simulating' && w.time - this.strikeAt > 60) {
+      for (const b of w.balls) { b.vx = b.vy = b.vz = b.wx = b.wy = b.wz = 0; b.z = 0; }
+    }
+    // 상대 결과가 오래 안 오면 전체 상태 재요청
+    if (this.waitingRemote) {
+      this.waitT += dt;
+      if (this.waitT > 6) { this.waitT = 0; this.net?.send({ t: 'need' }); }
+    } else this.waitT = 0;
     const moving = w.isMoving();
     const adv = w.advance(dt, this.timeScale);
     if (adv === 0) w.idle(dt * this.timeScale);
@@ -964,6 +1338,8 @@ export class Game {
   }
 
   private settleHandled = true;
+  private strikeAt = 0;
+  private waitT = 0;
 
   /** Enter: 랩 재실행 */
   labRerun() {

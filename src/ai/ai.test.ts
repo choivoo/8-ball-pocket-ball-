@@ -2,16 +2,18 @@ import { describe, it, expect } from 'vitest';
 import { World } from '../physics/world';
 import { defaultPhysics, clonePhysics } from '../config/physics';
 import { EightBall } from '../game-rules/eightBall';
+import { NineBall } from '../game-rules/nineBall';
+import type { RuleSet } from '../game-rules/RuleSet';
 import { ShotRecorder } from '../game-rules/report';
 import { PoolAI, type AiLevel } from './ai';
 
-async function playGame(levels: [AiLevel, AiLevel], seed: number, maxShots = 90) {
+async function playGame(levels: [AiLevel, AiLevel], seed: number, maxShots = 90, rules: RuleSet = EightBall) {
   const cfg = clonePhysics(defaultPhysics);
   const w = new World(cfg);
-  EightBall.setupRack(w, seed);
+  rules.setupRack(w, seed);
   w.rng.state = seed;
-  let st = EightBall.init();
-  const ais = [new PoolAI(cfg, levels[0], EightBall), new PoolAI(cfg, levels[1], EightBall)];
+  let st = rules.init();
+  const ais = [new PoolAI(cfg, levels[0], rules), new PoolAI(cfg, levels[1], rules)];
   const rec = new ShotRecorder();
   let pots = 0, fouls = 0, shots = 0;
   while (st.winner === null && shots < maxShots) {
@@ -26,18 +28,23 @@ async function playGame(levels: [AiLevel, AiLevel], seed: number, maxShots = 90)
     w.strike(shot);
     w.settle(40, 0.001);
     rec.detach();
-    const res = EightBall.evaluate(st, rec.report);
+    const res = rules.evaluate(st, rec.report);
     pots += rec.report.pocketed.filter((i) => i !== 0).length;
     fouls += res.fouls.length;
     st = res.state;
     if (cue.pocketed) { cue.pocketed = false; cue.x = -0.63; cue.y = 0; }
-    if (res.respot8) { const b = w.balls[8]; b.pocketed = false; b.x = 0.635; b.y = 0; }
+    if (res.respot !== null) { const b = w.balls[res.respot]; b.pocketed = false; b.x = 0.635; b.y = 0; }
     shots++;
   }
   return { winner: st.winner, shots, pots, fouls, reason: st.endReason };
 }
 
 describe('AI', () => {
+  it('plays 9-ball to completion', async () => {
+    const r = await playGame([2, 1], 7, 80, NineBall);
+    console.log('9-ball hard vs mid:', JSON.stringify(r));
+    expect(r.winner).not.toBeNull();
+  }, 200000);
   it('plays a full game vs itself and pots balls', async () => {
     const r = await playGame([2, 2], 11);
     console.log('AI(hard) vs AI(hard):', JSON.stringify(r));

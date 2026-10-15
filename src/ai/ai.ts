@@ -102,10 +102,9 @@ export class PoolAI {
     let score = 0;
     if (res.state.winner === me) return 10000;
     if (res.state.winner !== null) return -10000;
-    const g = state.groups[me];
     const objPot = rec.report.pocketed.filter((id) => id !== 0);
     for (const id of objPot) {
-      const own = !g || (g === 'solid' ? id >= 1 && id <= 7 : id >= 9);
+      const own = this.rules.isOwn(state, id);
       score += own ? 100 : -45;
     }
     if (res.fouls.length) score -= 320;

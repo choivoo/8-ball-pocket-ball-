@@ -12,6 +12,16 @@ export class BallViews {
   private blobTex = blobShadowTexture();
   private hidden: boolean[] = [];
 
+  /** 공 세트(색약 지원 등) 변경: 텍스처 재생성 */
+  refreshTextures() {
+    for (let i = 0; i < 16; i++) {
+      const mat = this.meshes[i].material as THREE.MeshPhysicalMaterial;
+      mat.map?.dispose();
+      mat.map = ballTexture(i);
+      mat.needsUpdate = true;
+    }
+  }
+
   constructor(segments: number) {
     const geo = new THREE.SphereGeometry(R, segments, Math.max(12, Math.floor(segments * 0.75)));
     // 구 텍스처 u 가 x축 기준으로 시작하도록 (번호가 적도에 오게)

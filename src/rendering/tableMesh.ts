@@ -44,6 +44,9 @@ function openingPolygon(): THREE.Vector2[] {
 }
 
 export interface TableParts {
+  /** 외형 교체용 */
+  setCloth(rgb: [number, number, number]): void;
+  setRail(wood: string): void;
   group: THREE.Group;
   cloth: THREE.Mesh;
   pocketCenters: THREE.Vector3[];
@@ -185,6 +188,13 @@ export function buildTableMesh(): TableParts {
     leg.castShadow = true;
     group.add(leg);
   }
+  // 레일 위 초크(분필) 큐브 두 개 — 분위기용
+  const chalkMat = new THREE.MeshStandardMaterial({ color: 0x2e7fd6, roughness: 0.95 });
+  for (const [cx, cy, rz] of [[-0.55, W + CW + RW * 0.5, 0.4], [0.62, -(W + CW + RW * 0.5), -0.3]] as [number, number, number][]) {
+    const ch = new THREE.Mesh(new THREE.BoxGeometry(0.03, 0.03, 0.018), chalkMat);
+    ch.position.set(cx, cy, RH + 0.009); ch.rotation.z = rz; ch.castShadow = true;
+    group.add(ch);
+  }
   // 헤드/풋 스팟
   const spotMat = new THREE.MeshBasicMaterial({ color: 0xe8e8e0, transparent: true, opacity: 0.55 });
   for (const x of [-L / 2, L / 2]) {
@@ -192,5 +202,14 @@ export function buildTableMesh(): TableParts {
     s.position.set(x, 0, 0.0005);
     group.add(s);
   }
-  return { group, cloth, pocketCenters: centers };
+  const setCloth = (rgb: [number, number, number]) => {
+    const t = feltTextures(8, rgb);
+    for (const m of [clothMat, cushionMat]) { m.map?.dispose(); m.map = t.map; m.needsUpdate = true; }
+  };
+  const setRail = (wood: string) => {
+    woodMat.map?.dispose();
+    woodMat.map = woodTexture(wood, 3);
+    woodMat.needsUpdate = true;
+  };
+  return { group, cloth, pocketCenters: centers, setCloth, setRail };
 }

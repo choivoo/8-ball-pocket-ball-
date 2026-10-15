@@ -29,6 +29,9 @@ export class Controls {
   onReplay: () => void = () => {};
   onConfirm: () => void = () => {};
   onUserInteract: () => void = () => {};
+  onHelp: () => void = () => {};
+  onFullscreen: () => void = () => {};
+  onPhoto: () => void = () => {};
 
   private keys = new Set<string>();
   private samples: { t: number; s: number }[] = [];
@@ -105,14 +108,14 @@ export class Controls {
     if (e.buttons === 0 && e.pointerType === 'mouse') return;
     if (this.placing && e.pointerType === 'touch') return; // 터치 배치 중엔 카메라 고정
     const fine = e.shiftKey ? 0.1 : 1;
-    const sens = 0.0034 * this.settings().sensitivity * fine;
+    const sens = 0.0034 * this.settings().sensitivity * fine * (this.settings().invertDrag ? -1 : 1);
     if (this.enabled) {
       this.aim.angle -= dx * sens;
       this.onAimChanged();
     } else {
       this.rig.aimYaw -= dx * sens;
     }
-    this.rig.pitch += dy * 0.004 * (e.shiftKey ? 0.3 : 1);
+    this.rig.pitch += dy * 0.004 * this.settings().pitchSensitivity * (e.shiftKey ? 0.3 : 1);
     this.rig.clampUser();
   }
 
@@ -163,6 +166,9 @@ export class Controls {
       case 'Escape': this.onPause(); break;
       case 'KeyT': this.onToggleTop(); break;
       case 'KeyP': this.onReplay(); break;
+      case 'KeyH': this.onHelp(); break;
+      case 'KeyF': this.onFullscreen(); break;
+      case 'F2': e.preventDefault(); this.onPhoto(); break;
       case 'Enter': this.onConfirm(); break;
       case 'KeyR': this.rig.pitch = 0.42; this.rig.distance = 1.15; break;
       case 'ArrowUp': case 'KeyW': this.changeElevation(2); break;

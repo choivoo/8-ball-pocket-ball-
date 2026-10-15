@@ -32,7 +32,7 @@ function heightToNormal(h: Float32Array, size: number, strength: number): THREE.
   return t;
 }
 
-export function feltTextures(repeat = 5) {
+export function feltTextures(repeat = 5, rgb: [number, number, number] = [14, 92, 52]) {
   const size = 512;
   const rng = new Rng(7);
   const h = new Float32Array(size * size);
@@ -52,7 +52,7 @@ export function feltTextures(repeat = 5) {
   const img = ctx.createImageData(size, size);
   for (let i = 0; i < size * size; i++) {
     const v = 0.78 + Math.min(1, h[i]) * 0.3;
-    img.data[i * 4] = 14 * v + 4; img.data[i * 4 + 1] = 92 * v + 4; img.data[i * 4 + 2] = 52 * v + 4; img.data[i * 4 + 3] = 255;
+    img.data[i * 4] = rgb[0] * v + 4; img.data[i * 4 + 1] = rgb[1] * v + 4; img.data[i * 4 + 2] = rgb[2] * v + 4; img.data[i * 4 + 3] = 255;
   }
   ctx.putImageData(img, 0, 0);
   const map = new THREE.CanvasTexture(c);
@@ -101,12 +101,17 @@ export function leatherNormal() {
   return t;
 }
 
-const BALL_COLORS: Record<number, string> = {
-  1: '#f2c20f', 2: '#1546b8', 3: '#d4281f', 4: '#4b1d83', 5: '#ee6a12', 6: '#0b7a3a', 7: '#7a1620', 8: '#0b0b0d',
+const BALL_SETS: Record<string, Record<number, string>> = {
+  standard: { 1: '#f2c20f', 2: '#1546b8', 3: '#d4281f', 4: '#4b1d83', 5: '#ee6a12', 6: '#0b7a3a', 7: '#7a1620', 8: '#0b0b0d' },
+  // 색약 지원: 명도/색상 차이를 크게 벌리고 번호를 키운다
+  contrast: { 1: '#ffe100', 2: '#0057e7', 3: '#ff2a1a', 4: '#8a2be2', 5: '#ff8a00', 6: '#00b050', 7: '#7a0010', 8: '#000000' },
+  pastel: { 1: '#f6d86a', 2: '#7ea6e8', 3: '#ee8c86', 4: '#a98bd6', 5: '#f4b27d', 6: '#7cc79b', 7: '#c27b86', 8: '#33353a' },
 };
+let currentSet = 'standard';
+export function setBallSet(name: string) { currentSet = BALL_SETS[name] ? name : 'standard'; }
 export function ballColor(id: number): string {
   if (id === 0) return '#f6f3ea';
-  return BALL_COLORS[id <= 8 ? id : id - 8];
+  return BALL_SETS[currentSet][id <= 8 ? id : id - 8];
 }
 
 /** 등장방형 텍스처: 적도 위 u=0.25, 0.75 에 번호 원이 오도록 */
@@ -126,12 +131,12 @@ export function ballTexture(id: number): THREE.CanvasTexture {
     ctx.fillStyle = '#c33';
     for (const u of [0.25, 0.75]) { ctx.beginPath(); ctx.arc(u * W, H / 2, 7, 0, Math.PI * 2); ctx.fill(); }
   } else {
-    const rpx = 56;
+    const rpx = currentSet === 'contrast' ? 66 : 56;
     for (const u of [0.25, 0.75]) {
       ctx.fillStyle = '#f7f5ee';
       ctx.beginPath(); ctx.ellipse(u * W, H / 2, rpx, rpx, 0, 0, Math.PI * 2); ctx.fill();
       ctx.fillStyle = '#111';
-      ctx.font = `bold ${id > 9 ? 62 : 72}px Arial, Helvetica, sans-serif`;
+      ctx.font = `bold ${(id > 9 ? 62 : 72) + (currentSet === 'contrast' ? 14 : 0)}px Arial, Helvetica, sans-serif`;
       ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
       ctx.fillText(String(id), u * W, H / 2 + 3);
       if (id === 6 || id === 9) ctx.fillRect(u * W - 18, H / 2 + 34, 36, 5);

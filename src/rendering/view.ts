@@ -9,6 +9,8 @@ import { buildRoom, buildEnvironmentTexture } from './environment';
 import { CameraRig } from './camera/cameraRig';
 import { PostFX } from './postfx';
 import type { Ball } from '../physics/types';
+import { setBallSet } from './textures';
+import { CUE_SKINS, CLOTH_SKINS, RAIL_SKINS, find, type Look } from '../meta/customize';
 
 const R = TABLE.ballRadius;
 
@@ -167,6 +169,40 @@ export class GameView {
     const v = new THREE.Vector3(x, z, -y).project(this.rig.camera);
     const r = this.canvas.getBoundingClientRect();
     return { x: r.left + ((v.x + 1) / 2) * r.width, y: r.top + ((1 - v.y) / 2) * r.height, visible: v.z < 1 };
+  }
+
+  /** 외형(큐/천/레일/공 세트) 적용 */
+  applyLook(look: Look) {
+    const cue = find(CUE_SKINS, look.cue), cloth = find(CLOTH_SKINS, look.cloth), rail = find(RAIL_SKINS, look.rail);
+    this.cue.setSkin(cue.shaft, cue.butt, cue.ring);
+    this.table.setCloth(cloth.rgb);
+    this.table.setRail(rail.wood);
+    setBallSet(look.balls);
+    this.balls.refreshTextures();
+  }
+
+  setAimColor(c: 'white' | 'cyan' | 'yellow') {
+    this.aim.setColor(c === 'cyan' ? 0x8fe3ff : c === 'yellow' ? 0xffe27a : 0xffffff);
+  }
+
+  /** 현재 화면을 PNG data URL 로 캡처 (포토 모드) */
+  capture(): string {
+    this.post.render(0);
+    return this.canvas.toDataURL('image/png');
+  }
+
+  private ring: THREE.Mesh | null = null;
+  /** 드릴 목표 지점 표시 (초록 링). null 이면 숨김 */
+  setTargetRing(t: [number, number, number] | null) {
+    if (!t) { if (this.ring) this.ring.visible = false; return; }
+    if (!this.ring) {
+      this.ring = new THREE.Mesh(new THREE.RingGeometry(0.93, 1, 64), new THREE.MeshBasicMaterial({ color: 0x66ff99, transparent: true, opacity: 0.85, depthWrite: false }));
+      this.ring.renderOrder = 2;
+      this.physRoot.add(this.ring);
+    }
+    this.ring.visible = true;
+    this.ring.position.set(t[0], t[1], 0.003);
+    this.ring.scale.set(t[2], t[2], 1);
   }
 
   skipRender = false;

@@ -18,3 +18,15 @@ function frame(now: number) {
 }
 requestAnimationFrame(frame);
 (window as any).__ready = true;
+
+// 그래픽 컨텍스트가 끊기면 안내 후 복구
+canvas.addEventListener('webglcontextlost', (e) => {
+  e.preventDefault();
+  game.ui.showInfo('그래픽 연결이 끊겼습니다', '기기의 그래픽 메모리가 부족해 연결이 끊어졌습니다. 새로고침하면 복구됩니다.', '새로고침', () => location.reload());
+});
+canvas.addEventListener('webglcontextrestored', () => location.reload());
+window.addEventListener('error', (e) => console.error('[error]', e.message));
+window.addEventListener('unhandledrejection', (e) => console.error('[unhandled]', e.reason));
+if ('serviceWorker' in navigator && location.protocol === 'https:') {
+  window.addEventListener('load', () => navigator.serviceWorker.register('./sw.js').catch(() => {}));
+}
